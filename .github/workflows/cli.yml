@@ -52,17 +52,17 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            go test ./internal/... ./cmd/line ./pkg/line/... ./pkg/e2ee
+            go test ./internal/... ./cmd/line ./cmd/cloudline ./pkg/line/... ./pkg/e2ee
           else
-            go test -race ./internal/... ./cmd/line ./pkg/line/... ./pkg/e2ee
+            go test -race ./internal/... ./cmd/line ./cmd/cloudline ./pkg/line/... ./pkg/e2ee
           fi
-          go vet ./internal/... ./cmd/line ./pkg/line ./pkg/e2ee ./pkg
+          go vet ./internal/... ./cmd/line ./cmd/cloudline ./pkg/line ./pkg/e2ee ./pkg
       - name: Format and static analysis
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          test -z "$(gofmt -l internal cmd/line)"
-          go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./internal/... ./cmd/line ./pkg/line ./pkg/e2ee ./pkg
+          test -z "$(gofmt -l internal cmd/line cmd/cloudline)"
+          go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./internal/... ./cmd/line ./cmd/cloudline ./pkg/line ./pkg/e2ee ./pkg
       - name: Native Linux Secret Service integration
         if: runner.os == 'Linux'
         shell: bash

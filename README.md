@@ -4,6 +4,10 @@ A security-focused fork of [kongesque/line-cli](https://github.com/kongesque/lin
 
 This repository currently provides the **sender**, not a complete hosted scheduler. A scheduling interface, durable job queue, and cloud deployment are separate work. Do not assume a message has been scheduled merely because this CLI is installed.
 
+## Looking for the scheduler?
+
+The complete application lives in **[punnkrit/line-scheduler](https://github.com/punnkrit/line-scheduler)**: private ChatGPT Sites UI, AWS scheduling, file uploads, and setup/login documentation. This fork supplies the reviewed LINE client and the narrow `cmd/cloudline` adapter. The application pins a specific client commit instead of copying the protocol code.
+
 ## Changes in this fork
 
 - Build with Go **1.27.3**, which fixes the certificate-validation issue GO-2026-6809 present in the original v0.5.0 executable.
