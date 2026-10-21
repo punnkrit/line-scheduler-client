@@ -30,10 +30,11 @@ class Table:
         if ":e" in values:item["error"]=values[":e"]
         self.writes.append(dict(item))
     def delete_item(self,Key,**kw):self.items.pop(Key["id"],None)
-dummy=types.SimpleNamespace(resource=lambda _:types.SimpleNamespace(Table=lambda _:Table()),client=lambda _:None)
+dummy=types.SimpleNamespace(resource=lambda _:types.SimpleNamespace(Table=lambda _:Table()),client=lambda _,**kw:None)
 sys.modules.setdefault("boto3",dummy)
 sys.modules.setdefault("botocore",types.ModuleType("botocore"))
 errors=types.ModuleType("botocore.exceptions");errors.ClientError=ClientError;sys.modules.setdefault("botocore.exceptions",errors)
+config=types.ModuleType("botocore.config");config.Config=lambda **kw:kw;sys.modules.setdefault("botocore.config",config)
 os.environ.update(JOBS_TABLE="jobs",SESSION_TABLE="sessions",BRIDGE_TOKEN="synthetic",SCHEDULE_GROUP="group")
 import handler as h
 

@@ -1,100 +1,46 @@
-# LINE Scheduler Client
+# LINE Scheduler
 
-A security-focused fork of [kongesque/line-cli](https://github.com/kongesque/line-cli), an unofficial command-line client for a personal LINE account. It can send messages to existing conversations without a LINE Official Account.
+LINE has stickers for every possible mood. A “send later” button? Apparently that was asking too much.
 
-This repository provides the **sender and an AWS serverless scheduling backend**. A private Sites interface supports composing, scheduling, cancelling, and reviewing messages. See the [deployment and security guide](deploy/aws/README.md). Installing the CLI alone does not schedule messages. Final deployment acceptance still requires delayed cloud delivery and browser scheduling verification.
+So I built one: a private front end on **ChatGPT Sites**, with a small **AWS serverless sender** behind it. Pick a chat, write a message or drop in a file, choose a time, and close the laptop. It sends from your personal LINE account to your existing conversations.
 
-## Changes in this fork
+## What it does
 
-- Build with Go **1.27.3**, which fixes the certificate-validation issue GO-2026-6809 present in the original v0.5.0 executable.
-- Require Letter Sealing end-to-end encryption by default. An explicit `--require-e2ee=false` permits transport-only encryption when LINE reports that E2EE is unavailable.
-- Refuse V2 failures without retrying V1, on both sending and reading. Explicit V1 support is preserved.
-- Preserve the full 64-bit V2 counter and handle malformed credential blobs without uncaught runtime panics.
-- Harden the build/update path so this fork's changes are not silently replaced by an upstream release.
+- Send now or schedule for later, with an explicit time zone.
+- Drag and drop images, text files, or other documents: up to five files, 20 MiB each.
+- Send text and each attachment as separate messages; cancel pending jobs and review receipts.
+- Require LINE Letter Sealing. No silent downgrade and no automatic resend after an uncertain outcome.
 
-**V2 status:** offline compatibility is verified with valid synthetic encoded IDs, the original Chrome runtime, and independent recipient checks. The earlier failure came from invalid test IDs. Authorized local login, saved-session restoration, local immediate/delayed delivery, and an immediate cloud send have also been exercised. See the [V2 follow-up and reproducible evidence](docs/V2_COMPATIBILITY.md) and [cloud validation limits](deploy/aws/README.md#validation).
+Images arrive as **file attachments**, not native photo bubbles. Native image sending is disabled because of an encryption flaw in the inherited format. Message order within a batch is not guaranteed.
 
-These changes reduce specific risks; they do not certify the client as completely safe. See [review findings and limits](docs/FORK_SECURITY.md).
+## Where everything lives
 
-## Build from source
+| Component | Job |
+| --- | --- |
+| **ChatGPT Sites** | Private interface, ChatGPT sign-in, and a server-side API relay |
+| **AWS Lambda** | Scheduling API and the Go LINE sender, running only when invoked |
+| **EventBridge Scheduler** | Wakes the sender at the chosen time |
+| **DynamoDB** | Jobs, receipts, and a separately encrypted LINE session |
+| **Private S3** | Temporary attachment storage, pinned to immutable versions |
 
-Install the exact Go 1.27.3 toolchain from [go.dev](https://go.dev/dl/). No administrator privileges or LINE credentials are needed to build.
+**LINE login starts in a private QR terminal on your computer.** Approve it on your phone, then the migration helper encrypts and transfers the session to AWS. Sites never receives the LINE session. ChatGPT sign-in only opens your private interface. After setup, the computer can be off.
 
-```sh
-git clone https://github.com/punnkrit/line-scheduler-client.git
-cd line-scheduler-client
-go mod verify
-./build.sh
-./bin/line version
-```
+There is no browser-based LINE reconnect wizard yet. The [architecture guide](docs/ARCHITECTURE.md) explains the three logins, session storage, attachment flow, timing, and recovery.
 
-On Windows, from PowerShell with Go 1.27.3 available:
+## Build your own
 
-```powershell
-go mod verify
-go build -trimpath -o .\bin\line.exe ./cmd/line
-.\bin\line.exe version
-```
+- [Frontend source and Sites setup](web/README.md)
+- [AWS deployment, security boundaries, and operations](deploy/aws/README.md)
+- [CLI build and usage](docs/CLI.md)
+- [Security review and remaining risks](docs/FORK_SECURITY.md)
+- [V2 compatibility evidence](docs/V2_COMPATIBILITY.md)
 
-Use this fork's source. The upstream Homebrew package and upstream install scripts do not include these changes. The included remote release installer entrypoints intentionally refuse upstream downloads and print source-build instructions.
+The sender is a hardened fork of [kongesque/line-cli](https://github.com/kongesque/line-cli). Build this fork from source with **Go 1.27.3**; upstream installers do not contain its changes. This repository includes synthetic tests and sanitized frontend source, never live credentials, messages, contact lists, or deployment identifiers.
 
-## Sign in
+This is an unofficial personal project. LINE can revoke sessions or change its protocol. “Sent” means LINE accepted the message, not that someone read it. AWS scheduling has minute-level precision, and an uncertain send needs a manual check in LINE. Small usage is intended to be inexpensive; free credits and recurring service allowances are separate, and a zero bill is not guaranteed.
 
-```sh
-./bin/line login --qr
-```
+## Thanks
 
-Scan the QR code with LINE on your phone and approve the login. Keep the QR code and PIN private. QR login avoids typing a password into the CLI, but still grants a personal-client session. Email/password login is also supported; enter passwords only at the local hidden prompt.
+Built on [Kongesque’s LINE CLI](https://github.com/kongesque/line-cli) and its [Beeper LINE](https://github.com/beeper/line) origins. Their work made this possible. Upstream history and copyright notices are retained under the [MIT License](LICENSE).
 
-The CLI stores session tokens and encryption keys using the operating system's credential protection. A Linux server without a desktop keyring requires the documented headless storage setup; ordinary desktop Linux and Windows have different requirements. See [session setup](docs/CLI.md#account-and-session).
-
-Signing in can replace an existing Chrome-style LINE client session.
-
-## Send a text
-
-List conversations and identify the exact recipient before sending:
-
-```sh
-./bin/line chats --show-ids
-./bin/line send CHAT_ID --text "A test message" --require-e2ee --timeout 30s
-```
-
-Use the full chat ID in automation. Names can be duplicated or changed. For text that should not appear in process arguments, supply UTF-8 text through standard input:
-
-```sh
-./bin/line send CHAT_ID --stdin --require-e2ee --json --timeout 30s < message.txt
-```
-
-Keep message input files outside the repository. The JSON receipt reports the message ID and encryption mode. A timeout or lost response can mean that a message was already sent: inspect the target conversation before retrying.
-
-## Scheduling design
-
-A future scheduler should persist each job's recipient, due time, status, and send receipt. It must distinguish a confirmed failure from an unknown delivery outcome. Blindly rerunning the CLI can produce duplicate messages, even though one CLI invocation does not replay a send automatically.
-
-The CLI can run on demand; continuous desktop automation is not required by its architecture. Unattended login persistence and real delivery still need testing in the chosen host environment.
-
-## Security and privacy
-
-- This is an unofficial client with broad personal-account capabilities, not a token restricted to one chat or sending only.
-- Treat the machine holding its session as trusted. OS credential encryption does not protect against every program running as the same user.
-- No passwords, tokens, QR codes, private messages, contact lists, live captures, or session databases belong in this repository or in issue reports.
-- All repository tests use synthetic data unless explicitly configured otherwise. Do not enable live-account tests in CI.
-- The custom protocol/crypto runtime has not received a complete independent cryptographic audit. LINE changes can break compatibility, and this project cannot guarantee account-policy outcomes.
-
-For current upstream features and limitations, see the [CLI guide](docs/CLI.md). Translated upstream guides may describe upstream defaults; this README defines this fork's security policy.
-
-## Development
-
-```sh
-go test ./internal/... ./cmd/line ./pkg/line/... ./pkg/e2ee
-go test ./pkg ./pkg/ltsm
-./scripts/security-check.sh ./bin/line
-```
-
-Review upstream changes before integrating them. Keep the compiler security pin, dependency checksums, and encryption regression tests current.
-
-## Attribution and license
-
-This work builds on [Kongesque's LINE CLI](https://github.com/kongesque/line-cli) and its [Beeper LINE](https://github.com/beeper/line) origins. Upstream history and copyright notices are retained. The code remains under the [MIT License](LICENSE).
-
-Not affiliated with or endorsed by LINE or LY Corporation.
+Not affiliated with LINE, LY Corporation, or OpenAI.

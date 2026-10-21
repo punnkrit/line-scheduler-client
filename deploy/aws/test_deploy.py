@@ -33,7 +33,7 @@ class DeploymentAccountTests(unittest.TestCase):
 
                 with patch.object(deploy, "ROOT", root), patch.object(deploy, "LOCAL", local), \
                      patch.object(deploy, "call", fake_call), patch("builtins.print"):
-                    deploy.deploy()
+                    deploy.deploy("https://private.example")
 
                 scoped = json.loads((local / ("deployment-" + account + "-" + deploy.REGION + ".json")).read_text())
                 bucket = scoped["bucket"]

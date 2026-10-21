@@ -1,22 +1,28 @@
 """Private scheduler backend. Never log requests, message bodies, or credentials."""
 import base64
 import hmac
+import hashlib
 import json
 import os
 import re
 import subprocess
 import time
 import uuid
+import unicodedata
 from datetime import datetime, timezone
 
 import boto3
 from botocore.exceptions import ClientError
+from botocore.config import Config
 
 ddb = boto3.resource("dynamodb")
 jobs = ddb.Table(os.environ["JOBS_TABLE"])
 session_table = ddb.Table(os.environ["SESSION_TABLE"]) if os.environ.get("SESSION_TABLE") else None
 scheduler = boto3.client("scheduler")
 functions = boto3.client("lambda")
+objects = boto3.client("s3", config=Config(signature_version="s3v4", s3={"addressing_style":"virtual"}),
+                       endpoint_url="https://s3."+os.environ.get("AWS_REGION","ap-southeast-1")+".amazonaws.com")
+MAX_FILE = 20 * 1024 * 1024
 ID = re.compile(r"^[a-f0-9]{32}$")
 CHAT = re.compile(r"^(?:[uUcCrR][A-Za-z0-9_-]{43}|[ucr][0-9a-f]{32})$")
 SAFE_ERROR = "The operation could not be completed. Refresh to check its status."
@@ -52,6 +58,82 @@ def invoke_worker(payload):
     functions.invoke(FunctionName=os.environ["WORKER_NAME"], InvocationType="Event", Payload=json.dumps(payload).encode())
 
 
+def file_spec(body):
+    name, size, digest = body.get("name"), body.get("size"), body.get("sha256")
+    if (not isinstance(name, str) or not name or len(name.encode("utf-8")) > 255
+            or any(c in "/\\" or unicodedata.category(c) == "Cc" for c in name)
+            or type(size) is not int or not 0 <= size <= MAX_FILE
+            or not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)):
+        raise ValueError("Invalid file")
+    return {"name": name, "size": size, "sha256": digest}
+
+
+def start_upload(body):
+    job_id = body.get("id", "")
+    if not isinstance(job_id, str) or not ID.fullmatch(job_id):
+        raise ValueError("Invalid upload")
+    spec = file_spec(body)
+    existing = read(jobs, job_id)
+    if existing:
+        if {k:existing.get("attachment", {}).get(k) for k in spec} != spec:
+            return response(409, {"error":"This request ID was already used."})
+        return response(200, {"scheduled":True})
+    # Metadata is bound to one future job; the browser cannot select arbitrary S3 keys.
+    metadata_id = "upload_" + job_id
+    previous = read(jobs, metadata_id)
+    if previous and any(previous.get(k) != v for k, v in spec.items()):
+        return response(409, {"error":"This upload ID was already used."})
+    now = int(time.time())
+    if not previous:
+        jobs.put_item(Item={"id":metadata_id, **spec, "expires_at":now+86400},
+                      ConditionExpression="attribute_not_exists(id)")
+    elif int(previous["expires_at"]) < now:
+        return response(410, {"error":"Upload expired. Remove the file and add it again."})
+    tag = "<Tagging><TagSet><Tag><Key>state</Key><Value>staging</Value></Tag></TagSet></Tagging>"
+    fields = {"Content-Type":"application/octet-stream", "x-amz-server-side-encryption":"AES256", "tagging":tag}
+    upload = objects.generate_presigned_post(
+        os.environ["FILES_BUCKET"], "uploads/"+job_id, Fields=fields,
+        Conditions=[{k:v} for k,v in fields.items()]+[["content-length-range",spec["size"],spec["size"]]], ExpiresIn=300)
+    return response(200, {"upload":upload})
+
+
+def prepare_attachment(job_id):
+    metadata = read(jobs, "upload_"+job_id)
+    if not metadata or int(metadata["expires_at"]) < time.time():
+        raise ValueError("Upload expired")
+    spec = file_spec({**metadata, "size":int(metadata["size"])})
+    key = "uploads/"+job_id
+    head = objects.head_object(Bucket=os.environ["FILES_BUCKET"],Key=key)
+    if head["ContentLength"] != spec["size"] or not head.get("VersionId") or head["VersionId"] == "null":
+        raise ValueError("Invalid uploaded file")
+    # Pin the immutable version before dispatch. A still-valid upload URL cannot replace it.
+    spec.update(key=key, version=head["VersionId"])
+    objects.put_object_tagging(Bucket=os.environ["FILES_BUCKET"],Key=key,VersionId=spec["version"],
+                               Tagging={"TagSet":[{"Key":"state","Value":"scheduled"}]})
+    return spec
+
+
+def delete_attachment(job):
+    attachment = job.get("attachment")
+    if attachment:
+        try:
+            objects.delete_object(Bucket=os.environ["FILES_BUCKET"],Key=attachment["key"],VersionId=attachment["version"])
+        except Exception:
+            pass  # Lifecycle is the fallback; never alter the delivery result for cleanup.
+
+
+def load_attachment(attachment):
+    spec = file_spec({**attachment, "size":int(attachment["size"])})
+    obj = objects.get_object(Bucket=os.environ["FILES_BUCKET"],Key=attachment["key"],VersionId=attachment["version"])
+    try:
+        content = obj["Body"].read(MAX_FILE+1)
+    finally:
+        obj["Body"].close()
+    if len(content) != spec["size"] or not hmac.compare_digest(hashlib.sha256(content).hexdigest(), spec["sha256"]):
+        raise ValueError("File integrity check failed")
+    return {"file_name":spec["name"], "file_data":base64.b64encode(content).decode("ascii")}
+
+
 def controller(event, context):
     headers = {k.lower(): v for k, v in event.get("headers", {}).items()}
     expected = "Bearer " + os.environ["BRIDGE_TOKEN"]
@@ -77,6 +159,8 @@ def controller(event, context):
             return response(405, {"error": "Method not allowed"})
         body = json.loads(event.get("body") or "{}")
         action = body.get("action")
+        if action == "upload":
+            return start_upload(body)
         if action == "refresh":
             # An inexpensive durable cooldown prevents expensive refresh flooding.
             try:
@@ -106,13 +190,16 @@ def controller(event, context):
                 scheduler.delete_schedule(Name=job_id, GroupName=os.environ["SCHEDULE_GROUP"])
             except ClientError:
                 pass  # Cancelled row is authoritative even if schedule cleanup fails.
+            delete_attachment(read(jobs, job_id) or {})
             return response(200, {"cancelled": True})
         if action != "schedule":
             raise ValueError("Invalid action")
         job_id, chat, text = body.get("id",""), body.get("chat",""), body.get("text","")
         if not ID.fullmatch(job_id) or not CHAT.fullmatch(chat):
             raise ValueError("Choose a conversation")
-        if not isinstance(text,str) or not text.strip() or len(text.encode("utf-16-le"))//2 > 10000:
+        is_file = body.get("file") is True
+        if (not isinstance(text,str) or len(text.encode("utf-16-le"))//2 > 10000
+                or (not is_file and not text.strip()) or (is_file and text)):
             raise ValueError("Enter a message of at most 10,000 characters")
         immediate = body.get("immediate") is True
         now = int(time.time())
@@ -121,7 +208,7 @@ def controller(event, context):
             raise ValueError("Choose a time at least one minute ahead and within one year")
         existing = read(jobs,job_id)
         if existing:
-            if existing.get("chat") != chat or existing.get("text") != text:
+            if existing.get("chat") != chat or existing.get("text") != text or bool(existing.get("attachment")) != is_file:
                 return response(409, {"error":"This request ID was already used."})
             return response(200, {"job":existing})
         meta = read(jobs,"meta") or {}
@@ -134,6 +221,8 @@ def controller(event, context):
         item = {"id":job_id,"chat":chat,"chat_name":names[chat],"text":text,"due_at":due,
                 "created_at":now,"status":"queued","timezone":str(body.get("timezone","UTC"))[:80],
                 "expires_at":due+90*86400}
+        if is_file:
+            item["attachment"] = prepare_attachment(job_id)
         jobs.put_item(Item=item,ConditionExpression="attribute_not_exists(id)")
         try:
             if immediate:
@@ -187,7 +276,7 @@ def save_session(blob, version, owner):
     ])
 
 
-def run_client(action, owner, chat="", text=""):
+def run_client(action, owner, chat="", text="", file_input=None):
     saved = read(session_table,"session")
     if not saved: raise ValueError("No session")
     version = int(saved["version"])
@@ -197,7 +286,7 @@ def run_client(action, owner, chat="", text=""):
                                stderr=subprocess.DEVNULL,text=True,env=env)
     try:
         process.stdin.write(json.dumps({"action":action,"key":os.environ["SESSION_KEY"],"blob":saved["blob"],
-                                        "chat":chat,"text":text})+"\n")
+                                        "chat":chat,"text":text, **(file_input or {})})+"\n")
         process.stdin.flush()
         result = None
         for line in process.stdout:
@@ -265,16 +354,26 @@ def worker(event, context):
         if job["due_at"]<now-900:
             jobs.update_item(Key={"id":job_id},UpdateExpression="SET #s = :s",
                 ExpressionAttributeNames={"#s":"status"},ExpressionAttributeValues={":s":"expired"})
+            delete_attachment(job)
             return {"expired":True}
         jobs.update_item(Key={"id":job_id},UpdateExpression="SET #s = :s, started_at = :n",
             ConditionExpression="#s IN (:q,:p)",
             ExpressionAttributeNames={"#s":"status"},
             ExpressionAttributeValues={":s":"sending",":n":now,":q":"queued",":p":"scheduled"})
         claimed=True
-        result=run_client("send",owner,job["chat"],job["text"])
+        if job.get("attachment"):
+            try:
+                file_input = load_attachment(job["attachment"])
+            except Exception:
+                result = {"status":"failed", "error":"File unavailable or integrity check failed. Nothing was sent."}
+            else:
+                result=run_client("send-file",owner,job["chat"],"",file_input)
+        else:
+            result=run_client("send",owner,job["chat"],job["text"])
         jobs.update_item(Key={"id":job_id},UpdateExpression="SET #s = :s, result_info = :r, completed_at = :n",
             ConditionExpression="#s = :sending",ExpressionAttributeNames={"#s":"status"},
             ExpressionAttributeValues={":s":result["status"],":r":result,":n":int(time.time()),":sending":"sending"})
+        delete_attachment(job)
         return {"ok":True}
     except Exception:
         if claimed:

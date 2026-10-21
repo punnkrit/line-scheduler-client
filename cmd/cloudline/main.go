@@ -21,11 +21,13 @@ import (
 )
 
 type request struct {
-	Action string `json:"action"`
-	Key    string `json:"key"`
-	Blob   string `json:"blob"`
-	Chat   string `json:"chat"`
-	Text   string `json:"text"`
+	Action   string `json:"action"`
+	Key      string `json:"key"`
+	Blob     string `json:"blob"`
+	Chat     string `json:"chat"`
+	Text     string `json:"text"`
+	FileName string `json:"file_name"`
+	FileData []byte `json:"file_data"`
 }
 type pipeStore struct {
 	state *session.State
@@ -174,12 +176,23 @@ func run(r request, in *json.Decoder, out *json.Encoder) (any, error) {
 			return nil, e
 		}
 		return json.RawMessage(output.Bytes()), nil
-	case "send":
+	case "send", "send-file":
+		if r.Action == "send-file" {
+			if e := (messaging.Attachment{Name: r.FileName, Data: r.FileData}).Validate(); e != nil {
+				return nil, e
+			}
+			defer clear(r.FileData)
+		}
 		client, e := messaging.New(manager)
 		if e != nil {
 			return nil, e
 		}
-		result, e := client.SendContext(ctx, r.Chat, r.Text)
+		var result *messaging.SendResult
+		if r.Action == "send-file" {
+			result, e = client.SendFileContext(ctx, r.Chat, messaging.Attachment{Name: r.FileName, Data: r.FileData}, "")
+		} else {
+			result, e = client.SendContext(ctx, r.Chat, r.Text)
+		}
 		if e != nil {
 			status := "failed"
 			var mutation *messaging.MutationError
@@ -202,7 +215,7 @@ func run(r request, in *json.Decoder, out *json.Encoder) (any, error) {
 	}
 }
 func main() {
-	in := json.NewDecoder(bufio.NewReader(io.LimitReader(os.Stdin, 4<<20)))
+	in := json.NewDecoder(bufio.NewReader(io.LimitReader(os.Stdin, 32<<20)))
 	out := json.NewEncoder(os.Stdout)
 	var r request
 	if in.Decode(&r) != nil {

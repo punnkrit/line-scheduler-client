@@ -7,7 +7,9 @@ agent is involved in scheduled execution.
 
 ## What is implemented
 
-- Immediate text sending and one-time scheduled sends, cancellation, and history.
+- Immediate and scheduled text/file sends, cancellation, and history.
+- Private S3 uploads with exact size limits, immutable version pinning, and SHA-256 checks.
+- Images use generic encrypted file delivery; native images remain disabled.
 - UTC schedule storage with explicit time-zone selection in the interface.
 - Letter Sealing is mandatory. No plaintext downgrade or send retries.
 - Durable jobs and session state in separate DynamoDB tables.
@@ -36,7 +38,7 @@ holds SENDER_TOKEN; it never sends this token or AWS credentials to the browser.
 The endpoint uses constant-time bearer validation and does not enable CORS.
 The scheduler execution role can invoke only the sender. The API role has no
 access to the session table or encryption key. The sender has only scoped
-table, logging, and failure-queue permissions. No permanent AWS access key is
+table, version-specific attachment reads/deletes, logging, and failure-queue permissions. No permanent AWS access key is
 deployed. AWS role credentials are excluded from the Go child environment.
 
 The session encryption key is stored in Lambda's encrypted environment. CloudFormation
@@ -65,10 +67,10 @@ From the repository root:
     CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o deploy/aws/.local/cloudline ./cmd/cloudline
     CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o deploy/aws/.local/cloudline.exe ./cmd/cloudline
     cd deploy/aws
-    python3 deploy.py deploy
+    python3 deploy.py deploy --site-origin https://YOUR-PRIVATE-SITE
     python3 deploy.py status
 
-The helper creates a private S3 artifact bucket and the line-scheduler
+The helper creates a private S3 artifact bucket, a separate private versioned attachment bucket, and the line-scheduler
 CloudFormation stack. Build artifacts, account-specific deployment state and
 recovery data stay in .local, which is ignored. Request JSON containing secrets
 uses a Linux memory-backed file descriptor, not command arguments or disk.
@@ -152,6 +154,10 @@ allowances are separate.
 For teardown, cancel pending schedules, remove schedules in this stack's group,
 then delete the CloudFormation stack. Jobs and Sessions tables deliberately use
 Retain, so deleting the stack does not silently erase data. Review and remove
-retained tables and the artifact bucket explicitly when their data is no longer
+retained tables and both S3 buckets (including versions and delete markers) explicitly when their data is no longer
 needed. Deleting the encryption key/environment before planning session recovery
 can make the retained ciphertext unusable.
+
+## Frontend and login map
+
+The sanitized frontend is in [web/](../../web/README.md). Read the [architecture guide](../../docs/ARCHITECTURE.md) for the ChatGPT/AWS/LINE login distinction, file retention, and the separate-message attachment model. The current QR bootstrap is local; AWS retains and refreshes the encrypted session afterward.

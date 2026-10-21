@@ -42,7 +42,7 @@ def invoke(name,event):
     data=json.loads(path.read_text());path.unlink()
     if meta.get("FunctionError"):raise RuntimeError("Cloud function failed")
     return data
-def deploy():
+def deploy(site_origin=None):
     LOCAL.mkdir(exist_ok=True,mode=0o700)
     package=LOCAL/"function.zip"
     with zipfile.ZipFile(package,"w",zipfile.ZIP_DEFLATED) as z:
@@ -76,6 +76,12 @@ def deploy():
         existing=None
     parameters=[{"ParameterKey":"ArtifactBucket","ParameterValue":settings["bucket"]},
                 {"ParameterKey":"ArtifactKey","ParameterValue":artifact}]
+    if site_origin:
+        parameters.append({"ParameterKey":"SiteOrigin","ParameterValue":site_origin.rstrip("/")})
+    elif existing and any(p["ParameterKey"] == "SiteOrigin" for p in existing["Stacks"][0].get("Parameters",[])):
+        parameters.append({"ParameterKey":"SiteOrigin","UsePreviousValue":True})
+    else:
+        raise RuntimeError("Provide --site-origin https://your-private-site.example for attachment uploads")
     if existing:
         parameters += [{"ParameterKey":key,"UsePreviousValue":True} for key in ["SessionKey","BridgeToken"]]
     else:
@@ -114,8 +120,9 @@ def migrate():
     print(invoke(out["WorkerName"],{"action":"refresh"}))
 def main():
     parser=argparse.ArgumentParser();parser.add_argument("action",choices=["deploy","status","migrate","refresh","check","probe","verify"])
+    parser.add_argument("--site-origin",help="Exact private Site origin, used for S3 upload CORS")
     args=parser.parse_args()
-    if args.action=="deploy":return deploy()
+    if args.action=="deploy":return deploy(args.site_origin)
     if args.action=="status":
         print(call("cloudformation","describe-stacks","--stack-name",STACK)["Stacks"][0]["StackStatus"]);return
     out=outputs()
