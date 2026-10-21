@@ -1,0 +1,4 @@
+.local/
+__pycache__/
+live_check.py
+diagnose_local.py

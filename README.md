@@ -2,7 +2,7 @@
 
 A security-focused fork of [kongesque/line-cli](https://github.com/kongesque/line-cli), an unofficial command-line client for a personal LINE account. It can send messages to existing conversations without a LINE Official Account.
 
-This repository currently provides the **sender**, not a complete hosted scheduler. A scheduling interface, durable job queue, and cloud deployment are separate work. Do not assume a message has been scheduled merely because this CLI is installed.
+This repository provides the **sender and an AWS serverless scheduling backend**. A private Sites interface supports composing, scheduling, cancelling, and reviewing messages. See the [deployment and security guide](deploy/aws/README.md). Installing the CLI alone does not schedule messages. Final deployment acceptance still requires delayed cloud delivery and browser scheduling verification.
 
 ## Changes in this fork
 
@@ -12,7 +12,7 @@ This repository currently provides the **sender**, not a complete hosted schedul
 - Preserve the full 64-bit V2 counter and handle malformed credential blobs without uncaught runtime panics.
 - Harden the build/update path so this fork's changes are not silently replaced by an upstream release.
 
-**V2 status:** offline compatibility is verified with valid synthetic encoded IDs, the original Chrome runtime, and independent recipient checks. The earlier failure came from invalid test IDs. Real account login, saved-session restoration and live delivery remain untested. See the [V2 follow-up and reproducible evidence](docs/V2_COMPATIBILITY.md).
+**V2 status:** offline compatibility is verified with valid synthetic encoded IDs, the original Chrome runtime, and independent recipient checks. The earlier failure came from invalid test IDs. Authorized local login, saved-session restoration, local immediate/delayed delivery, and an immediate cloud send have also been exercised. See the [V2 follow-up and reproducible evidence](docs/V2_COMPATIBILITY.md) and [cloud validation limits](deploy/aws/README.md#validation).
 
 These changes reduce specific risks; they do not certify the client as completely safe. See [review findings and limits](docs/FORK_SECURITY.md).
 
