@@ -57,8 +57,3 @@ session.enc.*
 /LINE-CLI-AUDIT.md
 !/docs/FORK_SECURITY.md
 !/docs/V2_COMPATIBILITY.md
-!/docs/ARCHITECTURE.md
-!/web/package.json
-!/web/package-lock.json
-!/web/tsconfig.json
-!/web/.openai/hosting.json

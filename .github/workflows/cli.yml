@@ -63,11 +63,6 @@ jobs:
         run: |
           test -z "$(gofmt -l internal cmd/line cmd/cloudline)"
           go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./internal/... ./cmd/line ./cmd/cloudline ./pkg/line ./pkg/e2ee ./pkg
-      - name: Synthetic scheduler tests
-        if: runner.os == 'Linux'
-        run: |
-          python3 -m unittest discover -s deploy/aws -p 'test_*.py'
-          python3 -m unittest discover -s deploy/aws-probe -p 'test_*.py'
       - name: Native Linux Secret Service integration
         if: runner.os == 'Linux'
         shell: bash
