@@ -373,7 +373,6 @@ def worker(event, context):
         jobs.update_item(Key={"id":job_id},UpdateExpression="SET #s = :s, result_info = :r, completed_at = :n",
             ConditionExpression="#s = :sending",ExpressionAttributeNames={"#s":"status"},
             ExpressionAttributeValues={":s":result["status"],":r":result,":n":int(time.time()),":sending":"sending"})
-        delete_attachment(job)
         return {"ok":True}
     except Exception:
         if claimed:
@@ -387,6 +386,8 @@ def worker(event, context):
             return {"unconfirmed":True}
         raise RuntimeError("sender preparation unavailable") from None
     finally:
+        if claimed:
+            delete_attachment(job)
         try:
             session_table.delete_item(Key={"id":"lock"},ConditionExpression="#o = :o",
                                       ExpressionAttributeNames={"#o":"owner"},ExpressionAttributeValues={":o":owner})

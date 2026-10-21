@@ -76,6 +76,8 @@ class AttachmentTests(unittest.TestCase):
         policy=json.dumps(resources["WorkerRole"]["Properties"]["Policies"])
         self.assertNotIn("s3:PutObject",policy)
         self.assertIn("s3:GetObjectVersion",policy)
+        abandoned=resources["Files"]["Properties"]["LifecycleConfiguration"]["Rules"][0]
+        self.assertEqual(abandoned["NoncurrentVersionExpiration"]["NoncurrentDays"],1)
 
 
 class AttachmentWorkerTests(unittest.TestCase):
@@ -97,5 +99,13 @@ class AttachmentWorkerTests(unittest.TestCase):
         with patch.object(h,"load_attachment",return_value={"file_name":"test.txt","file_data":""}),patch.object(h,"delete_attachment"):
             self.run_worker(send)
             self.run_worker(lambda *args:self.fail("Duplicate attachment send"))
+    def test_uncertain_file_attempt_cleans_up_without_replay(self):
+        h.jobs.items[self.id]["attachment"]={"name":"test.txt"}
+        with patch.object(h,"load_attachment",return_value={"file_name":"test.txt","file_data":""}), \
+             patch.object(h,"delete_attachment") as cleanup:
+            self.run_worker(Mock(side_effect=OSError("synthetic lost response")))
+            self.assertEqual(h.jobs.items[self.id]["status"],"unknown")
+            self.run_worker(lambda *args:self.fail("Uncertain file must not replay"))
+            cleanup.assert_called_once()
 
 if __name__=="__main__":unittest.main()

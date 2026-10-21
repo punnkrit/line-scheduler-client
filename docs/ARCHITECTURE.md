@@ -91,8 +91,8 @@ encryption. Generic-file interoperability is separate from text support.
 | Unsaved draft | Browser memory | Until refresh/close; no draft sync |
 | Job text, recipient, filename, hash, receipt | DynamoDB jobs table | TTL 90 days after due time; deletion is asynchronous |
 | File bytes | Private, versioned, server-encrypted S3 bucket | Exact version deleted after completion/cancellation when possible |
-| Abandoned upload | S3, tagged staging | Lifecycle expiration after one day; physical/version cleanup is asynchronous |
-| Retained/old object versions | S3 | 370-day lifecycle ceiling; needed for schedules up to one year ahead |
+| Abandoned upload | S3, tagged staging | Current version expires after one day; noncurrent staging versions after one more day; cleanup is asynchronous |
+| Scheduled file left after an interrupted cleanup | S3 | Current versions expire after 370 days; noncurrent scheduled versions after 370 more days (up to about 740 days total) |
 | LINE tokens, keys, request sequence | Encrypted DynamoDB session record | Retained for the active account |
 | Hosting bridge secret | Sites server runtime and API Lambda | Until rotated; never browser code |
 

@@ -122,7 +122,7 @@ sends through the private browser interface. The delayed test was accepted 11 se
 after its scheduled time. Both receipts remained visible after reopening the Site.
 Unauthenticated requests were rejected, and the sender token was absent from the
 browser build. These checks verify the tested flow, not a guarantee of future delivery.
-Account-specific notices, identifiers and test recipients stay outside public source.
+Attachment validation also confirmed an immediate text-file send and a scheduled PNG sent as a generic file, both with encrypted LINE receipts. The PNG was accepted 26 seconds after its due time while the test tab was closed. Cancellation and completed-send cleanup removed the pinned S3 versions; anonymous attachment reads were rejected. Browser file selection was exercised; automated external drag simulation was unavailable. Account-specific notices, identifiers and test recipients stay outside public source.
 
 ## Operations and recovery
 

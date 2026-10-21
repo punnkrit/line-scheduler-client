@@ -27,7 +27,7 @@ def template():
         "BucketEncryption":{"ServerSideEncryptionConfiguration":[{"ServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]},
         "CorsConfiguration":{"CorsRules":[{"AllowedOrigins":[ref("SiteOrigin")],"AllowedMethods":["POST"],"AllowedHeaders":["*"],"MaxAge":300}]},
         "LifecycleConfiguration":{"Rules":[
-            {"Id":"AbandonedUploads","Status":"Enabled","TagFilters":[{"Key":"state","Value":"staging"}],"ExpirationInDays":1},
+            {"Id":"AbandonedUploads","Status":"Enabled","TagFilters":[{"Key":"state","Value":"staging"}],"ExpirationInDays":1,"NoncurrentVersionExpiration":{"NoncurrentDays":1}},
             {"Id":"StorageCeiling","Status":"Enabled","Prefix":"uploads/","ExpirationInDays":370,"NoncurrentVersionExpiration":{"NoncurrentDays":370},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}
         ]}}}
     r["FilesPolicy"]={"Type":"AWS::S3::BucketPolicy","Properties":{"Bucket":ref("Files"),"PolicyDocument":policy([
