@@ -32,6 +32,8 @@
 # Test files
 *.txt
 *.json
+!/pkg/ltsm/testdata/v2_reference.json
+!/pkg/ltsm/testdata/v2_official_reference.json
 
 # Executables
 *.exe
@@ -54,3 +56,4 @@ session.enc.*
 /audit-tools/
 /LINE-CLI-AUDIT.md
 !/docs/FORK_SECURITY.md
+!/docs/V2_COMPATIBILITY.md

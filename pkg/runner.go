@@ -32,13 +32,6 @@ type Runner struct {
 
 	signingContexts map[[sha256.Size]byte]signingContext
 	signingLRU      [][sha256.Size]byte
-
-	// Pure Go channels for encrypt/decrypt when raw key material is available.
-	// Currently populated when a Go-generated key (with known private key) is
-	// used to create a channel. WASM-unwrapped keys (from key chain) do NOT
-	// have raw private keys because of SKB (white-box crypto).
-	goKeys     map[int]*goKeyEntry   // internal ID -> raw key material
-	goChannels map[int]*ltsm.Channel // internal ID -> pure Go channel
 }
 
 const signingCacheCapacity = 4
@@ -171,11 +164,6 @@ type UnwrappedKey struct {
 	RawKeyID int    `json:"rawKeyId"`
 }
 
-// goKeyEntry holds raw Curve25519 key material for pure Go crypto.
-type goKeyEntry struct {
-	privKey []byte // raw 32-byte private key (nil if not available)
-}
-
 var (
 	globalRunner *Runner
 	runnerOnce   sync.Once
@@ -215,8 +203,6 @@ func GetRunner() (*Runner, error) {
 			channelStore:    make(map[int]uint32),
 			signingContexts: make(map[[sha256.Size]byte]signingContext),
 			nextID:          1,
-			goKeys:          make(map[int]*goKeyEntry),
-			goChannels:      make(map[int]*ltsm.Channel),
 		}
 	})
 	return globalRunner, runnerErr
@@ -237,6 +223,8 @@ func (r *Runner) getKey(id int) (uint32, error) {
 	return ptr, nil
 }
 
+// KeyGenerate creates a Curve25519 key for group-key wrapping. Unlike a loaded
+// E2EEKey, this ephemeral key has no server-assigned key ID or export envelope.
 func (r *Runner) KeyGenerate() (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -267,6 +255,15 @@ func ltsmPanicError(operation string, recovered any) error {
 		return fmt.Errorf("%s panicked: %w", operation, err)
 	}
 	return fmt.Errorf("%s panicked: %v", operation, recovered)
+}
+
+// Credential-runtime failures can contain decoded input in their panic value.
+// Preserve only the fatal-abort classification, never the panic text.
+func credentialRuntimePanicError(operation string, recovered any) error {
+	if cause, ok := recovered.(error); ok && errors.Is(cause, ltsm.ErrAbort) {
+		return fmt.Errorf("%s failed: %w", operation, ltsm.ErrAbort)
+	}
+	return fmt.Errorf("%s failed while decoding credential data", operation)
 }
 
 func (r *Runner) exportE2EEKeyPanicSafe(keyPtr uint32) (exported []byte, err error) {
@@ -443,9 +440,14 @@ func (r *Runner) DebugExportDerivedSigningKey(accessToken string) (string, error
 }
 
 // StorageInit initializes the storage key using getEncryptedIdentityV3 response fields.
-func (r *Runner) StorageInit(wrappedNonce, kdf1, kdf2 string) error {
+func (r *Runner) StorageInit(wrappedNonce, kdf1, kdf2 string) (err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = credentialRuntimePanicError("ltsm storage key initialization", recovered)
+		}
+	}()
 
 	nonceBytes, err := base64.StdEncoding.DecodeString(wrappedNonce)
 	if err != nil {
@@ -475,9 +477,15 @@ func (r *Runner) StorageInit(wrappedNonce, kdf1, kdf2 string) error {
 }
 
 // StorageDecrypt decrypts lcs_secure blobs with the initialized storage key.
-func (r *Runner) StorageDecrypt(ciphertext string) (string, error) {
+func (r *Runner) StorageDecrypt(ciphertext string) (plaintext string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			plaintext = ""
+			err = credentialRuntimePanicError("ltsm storage decryption", recovered)
+		}
+	}()
 
 	if r.storageKey == 0 {
 		return "", fmt.Errorf("storage key not initialized")
@@ -515,7 +523,7 @@ func (r *Runner) StorageEncrypt(plaintext string) (string, error) {
 
 // LoginUnwrapKeyChain unwraps an email or QR keychain using the active login
 // curve key. A QRLoginKey lease must remain open until this export completes.
-func (r *Runner) LoginUnwrapKeyChain(serverPubB64, encryptedKeyChainB64 string) ([]UnwrappedKey, error) {
+func (r *Runner) LoginUnwrapKeyChain(serverPubB64, encryptedKeyChainB64 string) (keys []UnwrappedKey, err error) {
 	normalizedServerPub, err := normalizeServerPublicKeyB64(serverPubB64)
 	if err != nil {
 		return nil, err
@@ -523,6 +531,12 @@ func (r *Runner) LoginUnwrapKeyChain(serverPubB64, encryptedKeyChainB64 string) 
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			keys = nil
+			err = credentialRuntimePanicError("ltsm login keychain unwrap", recovered)
+		}
+	}()
 
 	if r.loginCurveKey == 0 {
 		return nil, fmt.Errorf("login key not initialized")
@@ -553,14 +567,13 @@ func (r *Runner) LoginUnwrapKeyChain(serverPubB64, encryptedKeyChainB64 string) 
 		return nil, err
 	}
 
-	keys := make([]UnwrappedKey, 0, size)
+	keys = make([]UnwrappedKey, 0, size)
+	pendingPointers := make([]uint32, 0, size)
 	for i := 0; i < size; i++ {
 		keyPtr, err := r.rt.E2EEKeychainGet(kcPtr, i)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get key %d from keychain: %w", i, err)
 		}
-
-		id := r.putKey(keyPtr)
 
 		exported, err := r.exportE2EEKeyPanicSafe(keyPtr)
 		if err != nil {
@@ -578,22 +591,32 @@ func (r *Runner) LoginUnwrapKeyChain(serverPubB64, encryptedKeyChainB64 string) 
 		}
 
 		keys = append(keys, UnwrappedKey{
-			KeyID:    id,
 			Exported: base64.StdEncoding.EncodeToString(exported),
 			Version:  version,
 			RawKeyID: rawKeyID,
 		})
+		pendingPointers = append(pendingPointers, keyPtr)
+	}
+	// Publish handles only after every exported entry has been validated. A
+	// malformed later entry must not leave a partly registered credential set.
+	for i, ptr := range pendingPointers {
+		keys[i].KeyID = r.putKey(ptr)
 	}
 
 	return keys, nil
 }
 
-// KeyLoad loads a base64 E2EE key and returns an internal key ID.
-// Also stores the decoded key bytes as a Go key entry so ChannelCreate can
-// create a pure Go Channel (required for group shared key wrapping).
-func (r *Runner) KeyLoad(b64Key string) (int, error) {
+// KeyLoad restores an opaque exported Letter Sealing key. Its bytes are not a
+// raw Curve25519 private key and must only be interpreted by the LTSM runtime.
+func (r *Runner) KeyLoad(b64Key string) (id int, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			id = 0
+			err = credentialRuntimePanicError("ltsm Letter Sealing key load", recovered)
+		}
+	}()
 
 	keyBytes, err := base64.StdEncoding.DecodeString(b64Key)
 	if err != nil {
@@ -604,15 +627,7 @@ func (r *Runner) KeyLoad(b64Key string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-
-	id := r.putKey(keyPtr)
-	// Store raw key bytes so ChannelCreate can derive a pure Go Channel.
-	// The exported key format from E2EEKeyExportKey is the raw 32-byte
-	// Curve25519 private key (same format stored by LINEJS clients).
-	if len(keyBytes) == 32 {
-		r.goKeys[id] = &goKeyEntry{privKey: keyBytes}
-	}
-	return id, nil
+	return r.putKey(keyPtr), nil
 }
 
 // KeyGetID returns the raw key ID for a loaded key.
@@ -646,9 +661,7 @@ func (r *Runner) KeyGetPublic(keyID int) (string, error) {
 	return base64.StdEncoding.EncodeToString(pubBytes), nil
 }
 
-// ChannelCreate creates a channel with our key and peer public key.
-// If a raw Go private key is available for the key, also creates a pure Go
-// channel for V1/V2 encrypt/decrypt without WASM overhead.
+// ChannelCreate creates a channel with our wrapped key and peer public key.
 func (r *Runner) ChannelCreate(keyID int, peerPublicB64 string) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -669,18 +682,7 @@ func (r *Runner) ChannelCreate(keyID int, peerPublicB64 string) (int, error) {
 		return 0, err
 	}
 
-	id := r.putChannel(chanPtr)
-
-	// If we have raw key material, also create a pure Go channel. This cache is
-	// best-effort; the WASM channel above is the authoritative channel.
-	if goKey, ok := r.goKeys[keyID]; ok && goKey.privKey != nil {
-		goChan, err := ltsm.NewChannel(goKey.privKey, peerPubBytes)
-		if err == nil {
-			r.goChannels[id] = goChan
-		}
-	}
-
-	return id, nil
+	return r.putChannel(chanPtr), nil
 }
 
 // ChannelUnwrapGroupSharedKey unwraps the group shared key using the channel.
@@ -707,21 +709,10 @@ func (r *Runner) ChannelUnwrapGroupSharedKey(channelID int, encryptedSharedKeyB6
 }
 
 // ChannelEncryptV1 encrypts plaintext with channel V1 (AES-256-CBC + MAC).
-// Uses pure Go crypto when a Go channel is available.
 func (r *Runner) ChannelEncryptV1(channelID int, plaintext string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Prefer pure Go channel
-	if goChan, ok := r.goChannels[channelID]; ok {
-		ctBytes, err := goChan.EncryptV1([]byte(plaintext))
-		if err != nil {
-			return "", fmt.Errorf("pure Go EncryptV1 failed: %w", err)
-		}
-		return base64.StdEncoding.EncodeToString(ctBytes), nil
-	}
-
-	// Fall back to transpiled module
 	chanPtr, err := r.getChannel(channelID)
 	if err != nil {
 		return "", err
@@ -735,23 +726,12 @@ func (r *Runner) ChannelEncryptV1(channelID int, plaintext string) (string, erro
 	return base64.StdEncoding.EncodeToString(ctBytes), nil
 }
 
-// ChannelEncryptV2 encrypts plaintext with channel v2.
-// Uses pure Go crypto when a Go channel is available (faster, and V2 works
-// correctly in Go whereas it fails in the WASM bridge due to SKB issues).
+// ChannelEncryptV2 encrypts plaintext with channel V2. As in Chrome's LTSM
+// interface, to and from are authenticated encrypted MIDs supplied by the API.
 func (r *Runner) ChannelEncryptV2(channelID int, to, from string, senderKeyID, receiverKeyID, contentType, seq int, plaintext string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Prefer pure Go channel (V2 is broken in WASM due to SKB AAD failure)
-	if goChan, ok := r.goChannels[channelID]; ok {
-		ctBytes, err := goChan.EncryptV2(to, from, senderKeyID, receiverKeyID, contentType, int64(seq), []byte(plaintext))
-		if err != nil {
-			return "", fmt.Errorf("pure Go EncryptV2 failed: %w", err)
-		}
-		return base64.StdEncoding.EncodeToString(ctBytes), nil
-	}
-
-	// Fall back to transpiled module
 	chanPtr, err := r.getChannel(channelID)
 	if err != nil {
 		return "", err
@@ -767,7 +747,6 @@ func (r *Runner) ChannelEncryptV2(channelID int, to, from string, senderKeyID, r
 }
 
 // ChannelDecryptV1 decrypts ciphertext with channel v1 (ios).
-// Uses pure Go crypto when a Go channel is available.
 func (r *Runner) ChannelDecryptV1(channelID, senderKeyID, receiverKeyID int, ciphertext string) (string, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -777,16 +756,6 @@ func (r *Runner) ChannelDecryptV1(channelID, senderKeyID, receiverKeyID int, cip
 		return "", "", fmt.Errorf("invalid ciphertext: %w", err)
 	}
 
-	// Prefer pure Go channel
-	if goChan, ok := r.goChannels[channelID]; ok {
-		ptBytes, err := goChan.DecryptV1(ctBytes)
-		if err != nil {
-			return "", "", fmt.Errorf("pure Go DecryptV1 failed: %w", err)
-		}
-		return string(ptBytes), base64.StdEncoding.EncodeToString(ptBytes), nil
-	}
-
-	// Fall back to transpiled module
 	chanPtr, err := r.getChannel(channelID)
 	if err != nil {
 		return "", "", err
@@ -800,8 +769,8 @@ func (r *Runner) ChannelDecryptV1(channelID, senderKeyID, receiverKeyID int, cip
 	return string(ptBytes), base64.StdEncoding.EncodeToString(ptBytes), nil
 }
 
-// ChannelDecryptV2 decrypts ciphertext with channel v2.
-// Uses pure Go crypto when a Go channel is available (V2 is broken in WASM).
+// ChannelDecryptV2 decrypts ciphertext with channel V2, authenticating both the
+// encrypted MID arguments and the message's associated data.
 func (r *Runner) ChannelDecryptV2(channelID int, to, from string, senderKeyID, receiverKeyID, contentType int, ciphertext string) (string, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -811,16 +780,6 @@ func (r *Runner) ChannelDecryptV2(channelID int, to, from string, senderKeyID, r
 		return "", "", fmt.Errorf("invalid ciphertext: %w", err)
 	}
 
-	// Prefer pure Go channel (V2 is broken in WASM due to SKB AAD failure)
-	if goChan, ok := r.goChannels[channelID]; ok {
-		ptBytes, err := goChan.DecryptV2(to, from, senderKeyID, receiverKeyID, contentType, ctBytes)
-		if err != nil {
-			return "", "", fmt.Errorf("pure Go DecryptV2 failed: %w", err)
-		}
-		return string(ptBytes), base64.StdEncoding.EncodeToString(ptBytes), nil
-	}
-
-	// Fall back to transpiled module
 	chanPtr, err := r.getChannel(channelID)
 	if err != nil {
 		return "", "", err
@@ -951,9 +910,8 @@ func (r *Runner) ChannelWrapGroupSharedKey(channelID int, keyID int) (string, er
 		return "", err
 	}
 
-	// Use the WASM module's wrapGroupSharedKey directly (same as LINE Extension).
-	// keyPtr is an emval handle wrapping the Curve25519Key C++ object.
-	// The C++ method expects an emscripten::val, which the emval handle represents.
+	// The registered wrapGroupSharedKey argument is a Curve25519Key pointer,
+	// matching the object returned by KeyGenerate.
 	wrapped, err := r.rt.E2EEChannelWrapGroupSharedKey(chanPtr, keyPtr)
 	if err != nil {
 		return "", err

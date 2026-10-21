@@ -838,6 +838,17 @@ func toFloat64(v any) float64 {
 
 // CallMethod calls an embind instance method on a C++ object.
 func (imp *Imports) CallMethod(className, methodName string, thisPtr uint32, args ...uint32) (uint32, error) {
+	return imp.callMethod(className, methodName, thisPtr, nil, args...)
+}
+
+// callMethodInt64 passes a method's single i64 argument without narrowing it to
+// the i32 wire type used by ordinary embind arguments. args omits that argument;
+// its position is obtained from the module's registered method signature.
+func (imp *Imports) callMethodInt64(className, methodName string, thisPtr uint32, value int64, args ...uint32) (uint32, error) {
+	return imp.callMethod(className, methodName, thisPtr, &value, args...)
+}
+
+func (imp *Imports) callMethod(className, methodName string, thisPtr uint32, bigint *int64, args ...uint32) (uint32, error) {
 	ci := imp.classByName[className]
 	if ci == nil {
 		return 0, fmt.Errorf("ltsm: class %q not found", className)
@@ -860,6 +871,26 @@ func (imp *Imports) CallMethod(className, methodName string, thisPtr uint32, arg
 	callArgs := make([]uint32, 0, 2+len(args))
 	callArgs = append(callArgs, mi.Context, thisPtr)
 	callArgs = append(callArgs, args...)
+	if bigint != nil {
+		position := -1
+		for i := 2; i < len(mi.ArgTypes); i++ {
+			if ti := imp.types[mi.ArgTypes[i]]; ti != nil && ti.Kind == "bigint" {
+				if position != -1 {
+					return 0, fmt.Errorf("ltsm: multiple i64 arguments are unsupported")
+				}
+				position = i
+			}
+		}
+		// This is the module's registered encryptV2 invoker signature. Reject
+		// other signatures before entering the generated indirect call.
+		if position != 7 || len(callArgs) != 8 || len(mi.ArgTypes) != 9 {
+			return 0, fmt.Errorf("ltsm: unsupported i64 method signature for %s.%s", className, methodName)
+		}
+		callArgs = append(callArgs, 0)
+		copy(callArgs[position+1:], callArgs[position:])
+		callArgs[position] = 0 // i64 is passed separately, without truncation.
+		return imp.callIndirect(mi.InvokerIdx, mi.ArgTypes, callArgs, uint64(*bigint))
+	}
 
 	return imp.callIndirect(mi.InvokerIdx, mi.ArgTypes, callArgs)
 }
@@ -947,7 +978,7 @@ func (imp *Imports) MarkSecureKeyExportable(ptr uint32) {
 
 // callIndirect dispatches to the appropriate callIndirectTN based on parameter count and types.
 // Most embind methods use all-uint32 params, but some have uint64 (bigint) params or returns.
-func (imp *Imports) callIndirect(invokerIdx uint32, argTypes []uint32, callArgs []uint32) (uint32, error) {
+func (imp *Imports) callIndirect(invokerIdx uint32, argTypes []uint32, callArgs []uint32, bigintValue ...uint64) (uint32, error) {
 	m := imp.mod
 	nArgs := len(callArgs)
 
@@ -968,14 +999,18 @@ func (imp *Imports) callIndirect(invokerIdx uint32, argTypes []uint32, callArgs 
 
 	// Dispatch for functions with bigint parameters at position 7 (e.g. encryptV2 seq param)
 	if bigintPos == 7 && nArgs == 9 {
+		value := uint64(callArgs[7])
+		if len(bigintValue) != 0 {
+			value = bigintValue[0]
+		}
 		if hasReturn {
 			// T36: (i32x7, i64, i32) -> i32  (e.g. encryptV2 invoker)
 			return m.callIndirectT36(invokerIdx, callArgs[0], callArgs[1], callArgs[2], callArgs[3],
-				callArgs[4], callArgs[5], callArgs[6], uint64(callArgs[7]), callArgs[8]), nil
+				callArgs[4], callArgs[5], callArgs[6], value, callArgs[8]), nil
 		}
 		// T26: (i32x7, i64, i32) -> void
 		m.callIndirectT26(invokerIdx, callArgs[0], callArgs[1], callArgs[2], callArgs[3],
-			callArgs[4], callArgs[5], callArgs[6], uint64(callArgs[7]), callArgs[8])
+			callArgs[4], callArgs[5], callArgs[6], value, callArgs[8])
 		return 0, nil
 	}
 

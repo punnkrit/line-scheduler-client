@@ -361,10 +361,10 @@ func (rt *Runtime) E2EEChannelEncryptV2(chanPtr uint32,
 	toPtr := rt.imp.writeStdString(to)
 	fromPtr := rt.imp.writeStdString(from)
 	ptHandle := rt.imp.WriteEmvalBytes(plaintext)
-	handle, err := rt.imp.CallMethod("E2EEChannel", "encryptV2", chanPtr,
+	handle, err := rt.imp.callMethodInt64("E2EEChannel", "encryptV2", chanPtr, seq,
 		toPtr, fromPtr,
 		uint32(senderKeyID), uint32(receiverKeyID), uint32(contentType),
-		uint32(seq), ptHandle)
+		ptHandle)
 	if err != nil {
 		return nil, fmt.Errorf("ltsm: E2EEChannel.encryptV2 failed: %w", err)
 	}

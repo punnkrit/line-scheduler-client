@@ -15,17 +15,12 @@ import (
 
 	gen "github.com/kongesque/line-cli/pkg"
 	"github.com/kongesque/line-cli/pkg/line"
-	"github.com/kongesque/line-cli/pkg/ltsm"
 )
 
 var (
 	ErrMissingOwnPrivateKey = errors.New("missing my private key")
 	ErrGroupKeyNotLoaded    = errors.New("e2ee key not loaded")
 )
-
-func isFatalLTSMError(err error) bool {
-	return errors.Is(err, ltsm.ErrAbort)
-}
 
 /*
 This wraps the JS runner to perform storage init, key/channel handling, and e2ee encrypt/decrypt.
@@ -257,14 +252,13 @@ func (m *Manager) EncryptMessageV2Raw(chatID, from string, myKeyID int, peerPubK
 	if err != nil {
 		return nil, err
 	}
-	// Split into chunks: [first16, middle, last12, senderKeyId(4), receiverKeyId(4)]
+	// Split into wire chunks: [salt16, ciphertext+GCM-tag, nonce12, senderKeyID4, receiverKeyID4].
 	if len(ctBytes) < 28 {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
-	// output = [Header (16)] [Tag (12)] [Body (...)]
-	// chunks sent: [Header] [Body] [Tag]
+	// Runtime output = salt(16) || nonce(12) || ciphertext+GCM-tag.
 	first := ctBytes[:16]
-	tag := ctBytes[16:28]
+	nonce := ctBytes[16:28]
 	body := ctBytes[28:]
 
 	senderBuf := make([]byte, 4)
@@ -272,8 +266,8 @@ func (m *Manager) EncryptMessageV2Raw(chatID, from string, myKeyID int, peerPubK
 	binary.BigEndian.PutUint32(senderBuf, uint32(senderKeyID))
 	binary.BigEndian.PutUint32(receiverBuf, uint32(receiverKeyID))
 	toB64 := func(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
-	// [first, body, tag]
-	chunks := []string{toB64(first), toB64(body), toB64(tag), toB64(senderBuf), toB64(receiverBuf)}
+	// [salt, ciphertext+GCM-tag, nonce]
+	chunks := []string{toB64(first), toB64(body), toB64(nonce), toB64(senderBuf), toB64(receiverBuf)}
 	return chunks, nil
 }
 
@@ -368,8 +362,9 @@ func (m *Manager) ensureChannelForEncrypt(chatID string, myKeyID, senderKeyID, r
 }
 
 func (m *Manager) DecryptMessageV2(msg *line.Message) (string, error) {
-	if len(msg.Chunks) < 5 {
-		return "", fmt.Errorf("not enough chunks")
+	version, cipher, err := messageCipher(msg)
+	if err != nil {
+		return "", err
 	}
 	m.mu.Lock()
 	myRaw := m.myRawKeyID
@@ -386,25 +381,12 @@ func (m *Manager) DecryptMessageV2(msg *line.Message) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cipher, err := assembleCipher(msg.Chunks)
-	if err != nil {
-		return "", err
-	}
 	chanID, err := m.channelFromKeyIDs(senderKeyID, receiverKeyID)
 	if err != nil {
 		return "", err
 	}
 
-	ver := 2
-	if vStr, ok := msg.ContentMetadata["e2eeVersion"]; ok && vStr == "1" {
-		ver = 1
-	}
-
-	if ver == 1 {
-		cipher, err := assembleCipherV1(msg.Chunks)
-		if err != nil {
-			return "", err
-		}
+	if version == 1 {
 		pt, _, err := m.runner.ChannelDecryptV1(chanID, senderKeyID, receiverKeyID, base64.StdEncoding.EncodeToString(cipher))
 		if err != nil {
 			return "", err
@@ -414,41 +396,44 @@ func (m *Manager) DecryptMessageV2(msg *line.Message) (string, error) {
 
 	pt, _, err := m.runner.ChannelDecryptV2(chanID, msg.To, msg.From, senderKeyID, receiverKeyID, msg.ContentType, base64.StdEncoding.EncodeToString(cipher))
 	if err != nil {
-		if isFatalLTSMError(err) {
-			return "", err
-		}
-		// V2 decrypt failed, try V1 as fallback (some clients like iOS still use V1)
-		cipherV1, err2 := assembleCipherV1(msg.Chunks)
-		if err2 != nil {
-			return "", err // return original V2 error
-		}
-		ptV1, _, err2 := m.runner.ChannelDecryptV1(chanID, senderKeyID, receiverKeyID, base64.StdEncoding.EncodeToString(cipherV1))
-		if err2 != nil {
-			return "", fmt.Errorf("V2 decrypt failed: %w; V1 fallback also failed: %w", err, err2)
-		}
-		return ptV1, nil
+		return "", err
 	}
 	return pt, nil
 }
 
-func assembleCipherV1(chunks []string) ([]byte, error) {
-	if len(chunks) < 3 {
-		return nil, fmt.Errorf("not enough chunks")
+// messageCipher selects one cipher from metadata before authentication. A V2
+// failure must never trigger V1, whose MAC does not authenticate V2 metadata.
+func messageCipher(msg *line.Message) (int, []byte, error) {
+	if msg == nil || len(msg.Chunks) != 5 {
+		return 0, nil, errors.New("encrypted message must contain exactly five chunks")
 	}
-	decode := func(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(strings.TrimSpace(s)) }
-	b0, err := decode(chunks[0])
-	if err != nil {
-		return nil, err
+	version := 2
+	switch msg.ContentMetadata["e2eeVersion"] {
+	case "", "2":
+	case "1":
+		version = 1
+	default:
+		return 0, nil, errors.New("unsupported message encryption version")
 	}
-	b1, err := decode(chunks[1])
-	if err != nil {
-		return nil, err
+	var parts [3][]byte
+	for i := range parts {
+		var err error
+		parts[i], err = base64.StdEncoding.DecodeString(strings.TrimSpace(msg.Chunks[i]))
+		if err != nil {
+			return 0, nil, errors.New("invalid encrypted message chunk encoding")
+		}
 	}
-	b2, err := decode(chunks[2])
-	if err != nil {
-		return nil, err
+	if version == 1 {
+		if len(parts[0]) != 8 || len(parts[1]) == 0 || len(parts[1])%16 != 0 || len(parts[2]) != 16 {
+			return 0, nil, errors.New("invalid V1 message framing")
+		}
+		return version, append(append(parts[0], parts[1]...), parts[2]...), nil
 	}
-	return append(append(b0, b1...), b2...), nil
+	// V2 wire order: salt(16), ciphertext with GCM tag(16), nonce(12).
+	if len(parts[0]) != 16 || len(parts[1]) < 16 || len(parts[2]) != 12 {
+		return 0, nil, errors.New("invalid V2 message framing")
+	}
+	return version, append(append(parts[0], parts[2]...), parts[1]...), nil
 }
 
 func (m *Manager) UnwrapGroupSharedKey(chatMid string, sharedKey *line.E2EEGroupSharedKey) (int, error) {
@@ -533,8 +518,9 @@ func (m *Manager) DecryptGroupMessage(msg *line.Message, chatMid string) (string
 	// Group chunks: [..., groupKeyID(4), ???]
 	// JS: vF365(t, n, r); n=myKeyID, r=groupKeyID.
 	// chunks = [first, body, tag, senderKeyID, groupKeyID]
-	if len(msg.Chunks) < 5 {
-		return "", 0, fmt.Errorf("not enough chunks")
+	version, cipher, err := messageCipher(msg)
+	if err != nil {
+		return "", 0, err
 	}
 
 	senderKeyID, err := DecodeKeyID(msg.Chunks[len(msg.Chunks)-2])
@@ -564,26 +550,17 @@ func (m *Manager) DecryptGroupMessage(msg *line.Message, chatMid string) (string
 		return "", groupKeyID, err
 	}
 
-	cipher, err := assembleCipher(msg.Chunks)
-	if err != nil {
-		return "", groupKeyID, err
+	if version == 1 {
+		pt, _, err := m.runner.ChannelDecryptV1(chanID, senderKeyID, groupKeyID, base64.StdEncoding.EncodeToString(cipher))
+		if err != nil {
+			return "", groupKeyID, err
+		}
+		return pt, groupKeyID, nil
 	}
 
 	pt, _, err := m.runner.ChannelDecryptV2(chanID, msg.To, msg.From, senderKeyID, groupKeyID, msg.ContentType, base64.StdEncoding.EncodeToString(cipher))
 	if err != nil {
-		if isFatalLTSMError(err) {
-			return "", groupKeyID, err
-		}
-		// V2 decrypt failed, try V1 as fallback (some clients like iOS still use V1)
-		cipherV1, err2 := assembleCipherV1(msg.Chunks)
-		if err2 != nil {
-			return "", groupKeyID, err // return original V2 error
-		}
-		ptV1, _, err2 := m.runner.ChannelDecryptV1(chanID, senderKeyID, groupKeyID, base64.StdEncoding.EncodeToString(cipherV1))
-		if err2 != nil {
-			return "", groupKeyID, fmt.Errorf("V2 decrypt failed: %w; V1 fallback also failed: %w", err, err2)
-		}
-		return ptV1, groupKeyID, nil
+		return "", groupKeyID, err
 	}
 
 	return pt, groupKeyID, nil
@@ -678,7 +655,7 @@ func (m *Manager) EncryptGroupMessageRawVersion(chatMid, fromMid string, version
 	}
 
 	first := ctBytes[:16]
-	tag := ctBytes[16:28]
+	nonce := ctBytes[16:28]
 	body := ctBytes[28:]
 
 	senderBuf := make([]byte, 4)
@@ -687,8 +664,8 @@ func (m *Manager) EncryptGroupMessageRawVersion(chatMid, fromMid string, version
 	binary.BigEndian.PutUint32(receiverBuf, uint32(groupKeyID)) // Receiver is Group Key ID
 
 	toB64 := func(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
-	// [first, body, tag, senderKeyID, groupKeyID]
-	chunks := []string{toB64(first), toB64(body), toB64(tag), toB64(senderBuf), toB64(receiverBuf)}
+	// [salt, ciphertext+GCM-tag, nonce, senderKeyID, groupKeyID]
+	chunks := []string{toB64(first), toB64(body), toB64(nonce), toB64(senderBuf), toB64(receiverBuf)}
 	return chunks, nil
 }
 
@@ -790,25 +767,4 @@ func DecodeKeyID(b64 string) (int, error) {
 		return 0, fmt.Errorf("invalid key id length")
 	}
 	return int(binary.BigEndian.Uint32(b)), nil
-}
-
-func assembleCipher(chunks []string) ([]byte, error) {
-	if len(chunks) < 3 {
-		return nil, fmt.Errorf("not enough chunks")
-	}
-	decode := func(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(strings.TrimSpace(s)) }
-	b0, err := decode(chunks[0])
-	if err != nil {
-		return nil, err
-	}
-	b1, err := decode(chunks[1])
-	if err != nil {
-		return nil, err
-	}
-	b2, err := decode(chunks[2])
-	if err != nil {
-		return nil, err
-	}
-	// Decrypted blob is [first, tag, middle], while chunks are [first, middle, tag]
-	return append(append(b0, b2...), b1...), nil
 }

@@ -8,10 +8,11 @@ This repository currently provides the **sender**, not a complete hosted schedul
 
 - Build with Go **1.27.3**, which fixes the certificate-validation issue GO-2026-6809 present in the original v0.5.0 executable.
 - Require Letter Sealing end-to-end encryption by default. An explicit `--require-e2ee=false` permits transport-only encryption when LINE reports that E2EE is unavailable.
-- Fail when V2 direct-message encryption fails, instead of silently retrying with V1 while labelling the message V2. Explicitly negotiated V1 group support is preserved.
+- Refuse V2 failures without retrying V1, on both sending and reading. Explicit V1 support is preserved.
+- Preserve the full 64-bit V2 counter and handle malformed credential blobs without uncaught runtime panics.
 - Harden the build/update path so this fork's changes are not silently replaced by an upstream release.
 
-**Known compatibility blocker:** the generated/transpiled-key V2 encryption path has a known upstream runtime failure. This fork refuses that send instead of substituting V1 ciphertext; compatibility with a real saved account session remains unverified.
+**V2 status:** offline compatibility is verified with valid synthetic encoded IDs, the original Chrome runtime, and independent recipient checks. The earlier failure came from invalid test IDs. Real account login, saved-session restoration and live delivery remain untested. See the [V2 follow-up and reproducible evidence](docs/V2_COMPATIBILITY.md).
 
 These changes reduce specific risks; they do not certify the client as completely safe. See [review findings and limits](docs/FORK_SECURITY.md).
 

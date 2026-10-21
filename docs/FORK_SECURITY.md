@@ -6,7 +6,7 @@ A bounded review of upstream v0.5.0 (commit aeefb35735ce496093fa0f8b7e76303c77a6
 
 1. **Outdated certificate validation:** the upstream Windows executable was built with Go 1.27.2. A local govulncheck v1.9.0 binary scan flagged GO-2026-6809 in crypto/x509.Certificate.Verify. Go 1.27.3 adds distrust of affected intermediate certificates in cases where system trust updates do not suffice. This finding does not imply observed exploitation. The fork updates the compiler pin and build instructions. [Go advisory](https://vuln.go.dev/ID/GO-2026-6809.json)
 2. **Encryption default:** upstream CLI send options allowed transport-only delivery by default following explicit LINE capability signals. This fork requires end-to-end encryption by default; transport-only delivery requires an explicit opt-out.
-3. **V2 fallback inconsistency:** direct-message encryption could retry V1 after a V2 failure while the enclosing sender still declared V2. This fork preserves the V2 failure instead. The generated/transpiled-key V2 path fails authentication inside the upstream runtime, and an upstream attachment test had accepted its V1 fallback. This fork treats that path as unsupported and refuses the send. This was a protocol/downgrade finding, not demonstrated plaintext exposure; fixing the generated cryptographic runtime is outside this review.
+3. **V2 fallback inconsistency:** direct-message encryption could retry V1 after a V2 failure while the enclosing sender still declared V2. This fork preserves the V2 failure instead. An upstream attachment test had accepted the V1 fallback. Follow-up established that the V2 failure was caused by invalid synthetic MIDs, not demonstrated account-key incompatibility. Correctly encoded synthetic MIDs work in both the original runtime and this fork. Incoming V2-to-V1 fallback was also removed. This was a protocol/downgrade finding, not demonstrated plaintext exposure. See [the correction and additional review](V2_COMPATIBILITY.md).
 4. **Build/update trust:** upstream Windows releases and tags were unsigned, and Actions references used mutable major tags. Checksums provide integrity relative to the publisher, not independent authentication. This fork pins Actions references and prevents its managed builds from replacing themselves with upstream releases.
 
 ## Positive evidence
@@ -20,8 +20,8 @@ A bounded review of upstream v0.5.0 (commit aeefb35735ce496093fa0f8b7e76303c77a6
 
 - Core CLI, session, messaging, updater, protocol and E2EE suites passed with the race detector under Go 1.27.3; vet and staticcheck v0.8.2 passed.
 - Source and rebuilt Windows-binary govulncheck v1.9.0 scans reported no known reachable vulnerabilities at review time.
-- Generated-key text and file regressions assert refusal without a message send. File preparation may already have uploaded encrypted bytes; the failure reports that outcome.
-- A separate test authenticates a V2 payload and attachment with the pure-Go cipher, including tamper rejection. It does **not** validate the full account-key/manager path. The old test's acceptance of V1 ciphertext as V2 was removed.
+- Unauthenticated-MID text and file regressions assert refusal without a message send. File preparation may already have uploaded encrypted bytes; the failure reports that outcome.
+- Real-manager direct/group V2 tests and complete file preparation pass with valid synthetic encoded MIDs. An independent recipient checks direct and file output; original-WASM known answers and Python-generated vectors provide separate evidence. No test accepts V1 ciphertext as V2. Account-issued saved keys and live sessions remain untested.
 
 ## Remaining trust boundaries
 

@@ -95,7 +95,7 @@ func TestFileWireEnvelopeProtectsKeyAndName(t *testing.T) {
 }
 
 // Keep the envelope probe above independent of Letter Sealing. These tests
-// separately cover the unsupported generated-key runner and real V2 crypto.
+// separately cover rejection of unauthenticated MID inputs and real V2 crypto.
 type realFileCrypto struct {
 	*fakeCrypto
 	manager   *e2ee.Manager
@@ -109,7 +109,7 @@ func (r *realFileCrypto) EncryptMessageV2(chat, from string, own int, pub string
 func (r *realFileCrypto) EncryptMessageV2Raw(chat, from string, own int, pub string, sender, receiver, kind int, payload []byte) ([]string, error) {
 	return r.manager.EncryptMessageV2Raw(chat, from, own, pub, sender, receiver, kind, payload)
 }
-func TestGeneratedKeyV2SendFailsClosed(t *testing.T) {
+func TestUnauthenticatedMIDV2SendFailsClosed(t *testing.T) {
 	runner, err := gen.GetRunner()
 	if err != nil {
 		t.Fatal("runner initialization failed")
@@ -135,69 +135,96 @@ func TestGeneratedKeyV2SendFailsClosed(t *testing.T) {
 	api := &fileAPI{fakeAPI: f}
 	c.Session.NewClient = func(string) session.API { return api }
 	if result, err := c.Send(chat, "synthetic"); err == nil || result != nil || f.sent != nil {
-		t.Fatal("unsupported V2 text path attempted a message or returned success")
+		t.Fatal("unauthenticated MID text path attempted a message or returned success")
 	}
 	attachment := Attachment{Name: "synthetic-private.txt", Data: []byte("synthetic confidential bytes")}
 	if result, err := c.SendFile(chat, attachment, ""); err == nil || result != nil || f.sent != nil {
-		t.Fatal("unsupported V2 attachment path attempted a message or returned success")
+		t.Fatal("unauthenticated MID attachment path attempted a message or returned success")
 	} else if !strings.Contains(err.Error(), "an uploaded file may remain") || len(api.uploaded) == 0 {
 		t.Fatal("attachment failure lost the prior upload outcome")
 	}
 }
 
-// Exercise the production pure-Go V2 cipher and attachment authentication
-// directly. This does not establish generated-key Manager compatibility.
+// Exercise the complete file send preparation with the real manager/runner and
+// an independent recipient. IDs are synthetic Chrome 3.7.2 encoded MID fixtures;
+// their provenance is recorded in docs/V2_COMPATIBILITY.md.
 func TestEncryptedFileV2PayloadRecipientRoundTrip(t *testing.T) {
-	sender, err := ecdh.X25519().GenerateKey(rand.Reader)
+	runner, err := gen.GetRunner()
 	if err != nil {
-		t.Fatal("synthetic sender key failed")
+		t.Fatal(err)
+	}
+	sender, err := runner.KeyGenerate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := runner.KeyGetPublic(sender)
+	if err != nil {
+		t.Fatal(err)
 	}
 	receiver, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatal("synthetic receiver key failed")
+		t.Fatal(err)
 	}
-	sending, err := ltsm.NewChannel(sender.Bytes(), receiver.PublicKey().Bytes())
+	manager, err := e2ee.NewManager()
 	if err != nil {
-		t.Fatal("sender channel failed")
+		t.Fatal(err)
 	}
-	recipient, err := ltsm.NewChannel(receiver.Bytes(), sender.PublicKey().Bytes())
-	if err != nil {
-		t.Fatal("recipient channel failed")
-	}
+	manager.RegisterUnwrappedKey(11, sender)
+	c, f, crypto, _ := setup(t, false)
+	c.state.MID = "u7taovmWXRBTY0jhEMCgFt_-Fts6Gd_T0NFMhHwH9tWc"
+	const chat = "uf82zNxJ1lQ3eCrbAgx1X6wbi3745SGfOJfcedryFex4"
+	f.key.PublicKey = base64.StdEncoding.EncodeToString(receiver.PublicKey().Bytes())
+	c.crypto = &realFileCrypto{fakeCrypto: crypto, manager: manager, senderKey: sender}
+	api := &fileAPI{fakeAPI: f}
+	c.Session.NewClient = func(string) session.API { return api }
 	attachment := Attachment{Name: "synthetic-private.txt", Data: []byte("synthetic confidential bytes")}
-	encryptedFile, key, err := encryptFile(attachment.Data)
-	if err != nil {
-		t.Fatal("attachment encryption failed")
+	result, err := c.SendFile(chat, attachment, "")
+	if err != nil || result == nil || !result.Encrypted || f.sent == nil || len(f.sent.Chunks) != 5 {
+		t.Fatalf("real V2 encrypted file preparation failed: %v", err)
 	}
-	payloadJSON, err := json.Marshal(map[string]string{"fileName": attachment.Name, "keyMaterial": key})
-	if err != nil {
-		t.Fatal("attachment payload encoding failed")
+	if f.sent.ContentMetadata["e2eeVersion"] != "2" || f.sent.ContentMetadata["ENC_KM"] != "" || f.sent.ContentMetadata["FILE_NAME"] != "" {
+		t.Fatal("V2 envelope has wrong version or exposes attachment secrets")
 	}
-	const chat = "u22222222222222222222222222222222"
-	const from = "u11111111111111111111111111111111"
-	cipher, err := sending.EncryptV2(chat, from, 11, 22, 14, 1, payloadJSON)
+	senderPublic, err := base64.StdEncoding.DecodeString(public)
 	if err != nil {
-		t.Fatal("V2 payload encryption failed")
+		t.Fatal(err)
 	}
-	decrypt := func(data []byte) ([]byte, error) { return recipient.DecryptV2(chat, from, 11, 22, 14, data) }
+	recipient, err := ltsm.NewChannel(receiver.Bytes(), senderPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := make([][]byte, 3)
+	for i := range parts {
+		parts[i], err = base64.StdEncoding.DecodeString(f.sent.Chunks[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(parts[0]) != 16 || len(parts[2]) != 12 {
+		t.Fatal("not a V2 envelope")
+	}
+	cipher := append(append(append([]byte{}, parts[0]...), parts[2]...), parts[1]...)
+	decrypt := func(data []byte) ([]byte, error) {
+		return recipient.DecryptV2("u11111111111111111111111111111111", "u22222222222222222222222222222222", 11, 22, 14, data)
+	}
 	payload, err := decrypt(cipher)
 	if err != nil {
-		t.Fatal("recipient could not authenticate sealed payload")
+		t.Fatalf("independent recipient rejected V2: %v", err)
 	}
 	var decoded map[string]string
 	if json.Unmarshal(payload, &decoded) != nil || decoded["fileName"] != attachment.Name {
-		t.Fatal("recipient payload lost filename")
+		t.Fatal("recipient lost filename")
 	}
-	plain, err := decryptFile(encryptedFile, decoded["keyMaterial"])
+	plain, err := decryptFile(api.uploaded, decoded["keyMaterial"])
 	if err != nil || !bytes.Equal(plain, attachment.Data) {
 		t.Fatal("recipient could not authenticate attachment")
 	}
 	cipher[len(cipher)-1] ^= 1
 	if _, err := decrypt(cipher); err == nil {
-		t.Fatal("tampered sealed payload accepted")
+		t.Fatal("tampered V2 payload accepted")
 	}
-	encryptedFile[len(encryptedFile)-1] ^= 1
-	if _, err := decryptFile(encryptedFile, decoded["keyMaterial"]); err == nil {
+	api.uploaded[len(api.uploaded)-1] ^= 1
+	if _, err := decryptFile(api.uploaded, decoded["keyMaterial"]); err == nil {
 		t.Fatal("tampered attachment accepted")
 	}
 }

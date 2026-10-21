@@ -135,6 +135,9 @@ func (ch *Channel) DecryptV1(data []byte) ([]byte, error) {
 //  5. AES-256-GCM encrypt with key, nonce, AAD
 //  6. Output: salt(16) || nonce(12) || ciphertext || tag(16)
 func (ch *Channel) EncryptV2(to, from string, senderKeyID, receiverKeyID, contentType int, seq int64, plaintext []byte) ([]byte, error) {
+	if err := validateV2MIDs(to, from); err != nil {
+		return nil, err
+	}
 	// 1. Generate 16-byte salt
 	salt := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
@@ -177,6 +180,9 @@ func (ch *Channel) EncryptV2(to, from string, senderKeyID, receiverKeyID, conten
 
 // DecryptV2 decrypts a V2 Letter Sealing ciphertext.
 func (ch *Channel) DecryptV2(to, from string, senderKeyID, receiverKeyID, contentType int, data []byte) ([]byte, error) {
+	if err := validateV2MIDs(to, from); err != nil {
+		return nil, err
+	}
 	if len(data) < 16+12+16 { // salt + nonce + tag minimum
 		return nil, fmt.Errorf("ltsm: V2 ciphertext too short (%d bytes)", len(data))
 	}
@@ -292,28 +298,28 @@ func buildAADv2(to, from string, senderKeyID, receiverKeyID, contentType int) []
 	return aad
 }
 
-// processMIDforAAD processes a LINE MID for use in V2 AAD.
-// MIDs are used as raw lowercase UTF-8 string bytes (33 bytes).
-// LINE MIDs are like "u8ae764e8e69e6bd4ecdd9b6ea0c40fce" where 'u' is user prefix.
-// The WASM hex-decodes and re-formats with "%s%08llx%08llx%s" which is identity.
+// processMIDforAAD preserves canonical MIDs as raw ASCII bytes, as independently
+// corroborated by CHRLINE's generateAAD (see testdata/generate_v2_reference.py).
+// This pure-Go path accepts canonical u/c/r + 32 lowercase hexadecimal digits;
+// Chrome's opaque encrypted identity strings require its separate runtime path.
+// Callers validate first: normalizing, truncating, or padding an identity here
+// would let distinct supplied identities authenticate as the same AAD.
 func processMIDforAAD(mid string) []byte {
-	result := make([]byte, 33)
-	if len(mid) == 0 {
-		return result
-	}
-	// Lowercase the entire MID and copy as raw bytes
-	n := len(mid)
-	if n > 33 {
-		n = 33
-	}
-	for i := 0; i < n; i++ {
-		c := mid[i]
-		if c >= 'A' && c <= 'Z' {
-			c |= 0x20
+	return []byte(mid)
+}
+
+func validateV2MIDs(to, from string) error {
+	for _, mid := range []string{to, from} {
+		if len(mid) != 33 || (mid[0] != 'u' && mid[0] != 'c' && mid[0] != 'r') {
+			return fmt.Errorf("ltsm: V2 requires canonical MIDs")
 		}
-		result[i] = c
+		for i := 1; i < len(mid); i++ {
+			if !((mid[i] >= '0' && mid[i] <= '9') || (mid[i] >= 'a' && mid[i] <= 'f')) {
+				return fmt.Errorf("ltsm: V2 requires canonical MIDs")
+			}
+		}
 	}
-	return result
+	return nil
 }
 
 // --- PKCS#7 Padding ---

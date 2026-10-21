@@ -130,7 +130,7 @@ func TestV2CiphertextFormat(t *testing.T) {
 	}
 
 	plaintext := []byte(`{"text":"test"}`) // 15 bytes
-	ct, err := ch.EncryptV2("uto", "ufrom", 1, 2, 0, 1, plaintext)
+	ct, err := ch.EncryptV2("u00000000000000000000000000000000", "u11111111111111111111111111111111", 1, 2, 0, 1, plaintext)
 	if err != nil {
 		t.Fatalf("EncryptV2: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestV2CiphertextFormat(t *testing.T) {
 }
 
 func TestProcessMIDforAAD(t *testing.T) {
-	// Test MID processing - should be identity (raw UTF-8 bytes, lowercased)
+	// Canonical MID bytes must be preserved exactly.
 	mid := "u8ae764e8e69e6bd4ecdd9b6ea0c40fce"
 	result := processMIDforAAD(mid)
 
@@ -158,11 +158,12 @@ func TestProcessMIDforAAD(t *testing.T) {
 		t.Errorf("expected identity:\n  got:  %q\n  want: %q", string(result), mid)
 	}
 
-	// Test uppercase prefix gets lowercased
+	// The byte helper does not normalize identities. Public encrypt/decrypt
+	// methods reject noncanonical identities before building AAD.
 	midUpper := "U8ae764e8e69e6bd4ecdd9b6ea0c40fce"
 	resultUpper := processMIDforAAD(midUpper)
-	if resultUpper[0] != 'u' {
-		t.Errorf("uppercase prefix not lowercased: got %c", resultUpper[0])
+	if string(resultUpper) != midUpper {
+		t.Fatal("MID bytes were silently normalized")
 	}
 }
 

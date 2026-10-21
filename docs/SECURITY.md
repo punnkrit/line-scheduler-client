@@ -58,7 +58,7 @@ Mutations are never automatically replayed after an uncertain response. The
 
 ## Security change record
 
-Upstream live observations below are inherited historical evidence, not live validation of this fork. The generated/transpiled-key V2 path currently fails inside the upstream runtime; this fork refuses that send instead of returning V1 ciphertext labelled V2. See [fork findings and validation](FORK_SECURITY.md).
+Upstream live observations below are inherited historical evidence, not live validation of this fork. V2 has now been validated offline with correctly encoded synthetic MIDs; the earlier fixture used the wrong ID format. This fork refuses V2 failures instead of substituting V1. See [fork findings and validation](FORK_SECURITY.md).
 
 For user-facing upgrade actions, see the [changelog](../CHANGELOG.md#unreleased).
 This record separates implementation changes, synthetic verification, and

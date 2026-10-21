@@ -3,13 +3,11 @@ package e2ee
 import (
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 
 	gen "github.com/kongesque/line-cli/pkg"
 	"github.com/kongesque/line-cli/pkg/line"
-	"github.com/kongesque/line-cli/pkg/ltsm"
 )
 
 func TestDirectEncryptionV2FailureDoesNotFallBack(t *testing.T) {
@@ -47,7 +45,7 @@ func TestDirectEncryptionV2FailureDoesNotFallBack(t *testing.T) {
 	}
 }
 
-func TestDirectEncryptionGeneratedKeyV2FailsClosed(t *testing.T) {
+func TestDirectEncryptionUnauthenticatedMIDV2FailsClosed(t *testing.T) {
 	m, err := NewManager()
 	if err != nil {
 		t.Fatal(err)
@@ -67,22 +65,7 @@ func TestDirectEncryptionGeneratedKeyV2FailsClosed(t *testing.T) {
 	m.RegisterUnwrappedKey(11, sender)
 	chunks, err := m.EncryptMessageV2("u00000000000000000000000000000000", "u11111111111111111111111111111111", sender, public, 11, 22, 0, "synthetic")
 	if err == nil || chunks != nil {
-		t.Fatal("unsupported generated-key V2 path returned ciphertext")
-	}
-}
-
-func TestIsFatalLTSMError(t *testing.T) {
-	if !isFatalLTSMError(ltsm.ErrAbort) {
-		t.Fatal("direct LTSM abort was not classified as fatal")
-	}
-	if !isFatalLTSMError(fmt.Errorf("decrypt failed: %w", ltsm.ErrAbort)) {
-		t.Fatal("wrapped LTSM abort was not classified as fatal")
-	}
-	if !isFatalLTSMError(fmt.Errorf("V2 failed: %w; V1 fallback failed: %w", errors.New("invalid V2 ciphertext"), ltsm.ErrAbort)) {
-		t.Fatal("LTSM abort in a combined fallback error was not classified as fatal")
-	}
-	if isFatalLTSMError(errors.New("authentication failed")) {
-		t.Fatal("ordinary decryption error was classified as fatal")
+		t.Fatal("unauthenticated MID returned ciphertext")
 	}
 }
 
