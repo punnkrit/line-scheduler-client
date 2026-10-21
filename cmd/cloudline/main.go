@@ -28,12 +28,15 @@ type request struct {
 	Text     string `json:"text"`
 	FileName string `json:"file_name"`
 	FileData []byte `json:"file_data"`
+	QRKey    string `json:"qr_key"`
+	Attempt  string `json:"attempt"`
 }
 type pipeStore struct {
-	state *session.State
-	aead  cipher.AEAD
-	in    *json.Decoder
-	out   *json.Encoder
+	state    *session.State
+	aead     cipher.AEAD
+	in       *json.Decoder
+	out      *json.Encoder
+	validate func(*session.State) error
 }
 
 const aad = "line-scheduler/session/v1"
@@ -89,6 +92,11 @@ func (s *pipeStore) Load() (*session.State, error) {
 	return &next, nil
 }
 func (s *pipeStore) Save(state *session.State) error {
+	if s.validate != nil {
+		if err := s.validate(state); err != nil {
+			return err
+		}
+	}
 	blob, e := seal(s.aead, state)
 	if e != nil {
 		return e
@@ -107,11 +115,17 @@ func (s *pipeStore) Save(state *session.State) error {
 }
 func (s *pipeStore) Delete() error { return errors.New("remote deletion unavailable") }
 func run(r request, in *json.Decoder, out *json.Encoder) (any, error) {
+	if r.Action == "login-view" {
+		return loginView(r)
+	}
 	a, e := cryptor(r.Key)
 	if e != nil {
 		return nil, e
 	}
 	r.Key = ""
+	if r.Action == "login" {
+		return login(r, a, in, out)
+	}
 	if r.Action == "export" {
 		if runtime.GOOS != "windows" {
 			return nil, errors.New("migration requires Windows")
