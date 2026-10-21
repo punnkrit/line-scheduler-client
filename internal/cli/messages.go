@@ -26,7 +26,7 @@ func (a *App) messageCommand(command string, args []string) error {
 	fs.Usage = func() {
 		fmt.Fprintf(a.Err, "Usage: line %s CHAT [options]\nCHAT is a full ID or unique exact name. Quote names with spaces.\n", command)
 		if command == "send" {
-			fmt.Fprintln(a.Err, "Uses Letter Sealing when available, otherwise HTTPS/TLS when LINE explicitly supports it.\nLINE can read non-E2EE content. Use --require-e2ee to block it.")
+			fmt.Fprintln(a.Err, "Requires Letter Sealing by default. Use --require-e2ee=false to allow HTTPS/TLS delivery when LINE explicitly reports no end-to-end encryption support.\nLINE can read non-E2EE content.")
 		}
 		fs.PrintDefaults()
 	}
@@ -55,7 +55,7 @@ func (a *App) messageCommand(command string, args []string) error {
 		fs.BoolVar(&pageMode, "page", false, "return a JSON history page with continuation cursor (requires --json)")
 		fs.StringVar(&cursor, "cursor", "", "continue a history page (requires --page --json)")
 	} else {
-		fs.BoolVar(&requireE2EE, "require-e2ee", false, "send only with Letter Sealing; stop if end-to-end encryption is unavailable")
+		fs.BoolVar(&requireE2EE, "require-e2ee", true, "send only with Letter Sealing; stop if end-to-end encryption is unavailable")
 		fs.StringVar(&mentionsJSON, "mentions", "", "explicit JSON mention array: [{\"start\":0,\"end\":5,\"mid\":\"USER_MID\"}] (UTF-16 offsets; text/stdin only)")
 		fs.StringVar(&text, "text", "", "message text")
 		fs.BoolVar(&stdin, "stdin", false, "read UTF-8 message text from stdin")

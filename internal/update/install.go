@@ -23,6 +23,9 @@ var ErrDurability = errors.New("the update was installed, but its durability cou
 // the watch and session locks throughout this operation. Downloads are pinned
 // to the checked release, never a moving /latest/download URL.
 func (s *Service) Install(ctx context.Context, p Plan) error {
+	if s.distribution == "fork" {
+		return errors.New("automatic updates are disabled for this fork; review and rebuild from your source checkout")
+	}
 	if !p.CanSelfUpdate || p.CurrentVersion != s.current || versionStatus(s.current, p.LatestVersion) != "update_available" ||
 		(s.goos != "linux" && s.goos != "darwin") || !supportedPlatform(s.goos, s.arch) {
 		return errors.New("automatic update is unavailable; run line update --check for instructions")

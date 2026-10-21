@@ -1,3 +1,5 @@
+> Fork note: See [the English README](README.md) for this fork's source-build instructions and stricter encryption defaults. The guide below is retained from upstream.
+
 # LINE CLI：個人のLINEアカウント向けコマンドラインクライアント
 
 [English](README.md) | [繁體中文（台灣）](README.zh-TW.md) | 日本語 | [ภาษาไทย](README.th.md)
@@ -218,7 +220,7 @@ Homebrewでは `brew upgrade line-cli` を実行します。その他のイン�
 
 ## ビルドと開発への参加
 
-ソースからのビルドには **Go 1.27.2** が必要です。macOSではXcode Command Line ToolsとCGOも必要です。
+ソースからのビルドには **Go 1.27.3** が必要です。macOSではXcode Command Line ToolsとCGOも必要です。
 設定と開発時の検証は[ソースからのビルド](docs/CLI.ja.md#build-from-source)と
 [開発への参加](CONTRIBUTING.md)（英語）を参照してください。
 

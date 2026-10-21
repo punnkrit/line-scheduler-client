@@ -21,21 +21,15 @@ can guide you through choices in a terminal or return JSON for scripts.
 
 ### Install
 
-On macOS or Linux:
+This fork is managed from source. Follow [Build from source](#build-from-source)
+with Go 1.27.3, then run `./bin/line` (PowerShell: `.\bin\line.exe`).
+If you add the build directory to `PATH`, the examples below also work as `line`.
 
-```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/kongesque/line-cli/main/scripts/install-release.sh | sh
-```
-
-The installer chooses the right release, checks its checksum, installs `line`
-in `~/.local/bin`, and configures `PATH` for common shells. Reopen your
-terminal if prompted.
-
-On macOS, you can also use Homebrew:
-
-```sh
-brew install kongesque/tap/line-cli
-```
+The remote release installer entrypoints, `scripts/install-release.sh` and
+`scripts/install-release.ps1`, intentionally stop with source-build instructions.
+They do not download or install upstream binaries. The optional `./install.sh`
+command builds from this local source checkout and installs that result. Upstream installers and
+Homebrew packages do not include this fork's security changes.
 
 For Linux desktop login on Debian or Ubuntu, install credential storage:
 
@@ -47,23 +41,11 @@ The desktop keyring must be running and unlocked in the same D-Bus session as
 `line`. Servers and SSH hosts without one use `line login --headless`; see
 [headless setup](#linux-servers-and-headless-storage).
 
-On Windows, run this in PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/kongesque/line-cli/main/scripts/install-release.ps1 | iex
-```
-
-The installer puts `line.exe` in `%LOCALAPPDATA%\line-cli\bin` and adds that
-directory to your user `PATH`. Reopen PowerShell if needed.
-
-Release binaries are currently unsigned. You can inspect or download them from
-[GitHub Releases](https://github.com/kongesque/line-cli/releases/latest).
-
-Check your installation:
+Check your source build:
 
 ```sh
-line version
-line help
+./bin/line version
+./bin/line help
 ```
 
 ### Sign in and send your first message
@@ -337,19 +319,19 @@ nonempty and at most 10,000 UTF-16 code units. Files can be up to 20 MiB.
 Images, video, and audio sent with `--file` appear as ordinary files and retain
 their original bytes.
 
-**Encryption.** Sends prefer Letter Sealing. When LINE explicitly reports no E2EE
-support, the CLI sends over HTTPS/TLS without confirmation. The transfer is
-encrypted, but LINE can read non-E2EE content. This also applies to scripts,
-`--json`, `--error-format=json`, and `--stdin`; they never prompt.
+**Encryption.** Sends require Letter Sealing by default. When LINE explicitly
+reports no E2EE support, the CLI returns `encryption_required` before remote
+actions. To allow HTTPS/TLS delivery for a specific send, use
+`--require-e2ee=false`. LINE can read that non-E2EE content. This policy also
+applies to scripts, `--json`, `--error-format=json`, and `--stdin`; they never prompt.
 
-To send only when Letter Sealing is available:
+To send with the default Letter Sealing requirement:
 
 ```sh
 line send CHAT_ID --file ./report.pdf --require-e2ee --json
 ```
 
-Strict mode returns `encryption_required` before remote actions if E2EE is
-unavailable.
+`--require-e2ee` and `--require-e2ee=true` explicitly retain the default policy.
 [LINE's Encryption Report 2025](https://www.lycorp.co.jp/en/privacy-security/security/transparency/encryption-report/2025/)
 explains TLS, Letter Sealing, and media E2EE in modern official clients; this CLI's
 media interoperability needs separate validation. File encryption support is checked
@@ -359,7 +341,7 @@ registered only during an explicit send with a complete list of current members.
 
 **Native images.** Encrypted `--image` sending is disabled because the current
 full-image/preview format reuses an encryption stream. It stops before uploads,
-group-key registration, or message creation; automatic non-E2EE delivery does not
+group-key registration, or message creation; opting out of the E2EE requirement does not
 bypass that restriction. Use `--file` to send the original image as a generic file,
 subject to the file support checks above.
 
@@ -367,7 +349,7 @@ When LINE explicitly supports non-E2EE images, use the following. HTTPS/TLS
 protects the transfer, but LINE can read the image:
 
 ```sh
-line send CHAT_ID --image ./screenshot.png --json
+line send CHAT_ID --image ./screenshot.png --require-e2ee=false --json
 ```
 
 `--image` accepts actual JPEG or still PNG data up to 20 MiB, 40 million decoded
@@ -475,57 +457,21 @@ line update
 line update --check --json
 ```
 
-`update` shows the installed version, the latest stable GitHub release, the
-installation method, and the executable it found. It works without signing in
-to LINE. `--check` only checks and shows the next step; it never installs or
-acquires session locks. Messaging commands do not check for updates.
+All three commands show source-build guidance for this fork. They do not contact
+GitHub or LINE, inspect the executable, download releases, replace files, or
+acquire session/watcher locks. There is no automatic upstream-version check.
+The source-build and release-workflow build markers both enforce this policy.
 
-| Installation | `line update` behavior |
-| --- | --- |
-| Official standalone installer on macOS/Linux | Downloads, verifies, and replaces the executable when a newer stable release exists. |
-| Homebrew | Prints `brew upgrade line-cli`; Homebrew retains ownership of the executable. |
-| Official standalone installer on Windows | Prints a PowerShell installer command to run after this command exits. |
-| Source build | Points to the release tag and source-build instructions. |
-| Unrecognized installation | Shows the release page and asks you to use your original installation method. |
+To upgrade, stop commands and watchers (including services that restart them),
+review changes in your fork checkout, and rebuild with `./build.sh`. On Windows,
+use the PowerShell build command in [Build from source](#build-from-source).
+Do not run upstream release installers to update this fork.
 
-Self-update requires both an official release build and the `.line-cli-install`
-receipt beside the executable, written by the official installers. A manually
-copied binary, an older installation without this receipt, or a source build is
-not automatically replaced. Use your original installation method to upgrade;
-rerunning the official installer also creates the receipt. Custom standalone
-installation directories are supported. The Windows upgrade command sets
-`LINE_CLI_INSTALL_DIR` to the detected directory, preserving custom locations.
-
-Stop existing commands and watchers, including any service that restarts a
-watcher, before updating. Automatic replacement holds the watcher and session
-locks without reading credentials. It refuses to proceed when either lock is
-unavailable. Do not run an external installer concurrently.
-
-The updater downloads assets from the checked release tag, verifies the archive
-against that release's SHA-256 checksums, and stages the executable in the same
-directory before replacing it with an atomic rename. Download, checksum, and
-extraction failures leave the installed executable intact. Downloads and archive
-extraction have size limits. It does not use sudo, retry installation, downgrade
-newer versions, or guess the ordering of development/prerelease builds.
-
-`--json` writes one result to stdout, with diagnostics on stderr, and follows
-the same installation behavior as human-readable output. Use **both `--check`
-and `--json`** for a read-only check. Fields include `current_version`,
-`latest_version`, `status`, `installation`, `executable`, `can_self_update`,
-`release_url`, and optional `instructions` and `upgrade_command`.
-
-Check statuses are `update_available`, `up_to_date`, `ahead`, and
-`unknown_version`. Successful installation returns `updated`; a failed attempt
-returns `failed`. `updated_unconfirmed` means replacement happened but the
-directory could not be synced: check `line version` before retrying. The
-`current_version` field always records the version that started the command;
-after `updated`, `latest_version` is the installed version. `can_self_update`
-describes support, not whether a newer version exists.
-
-Successful checks and manual instructions exit 0, including when an update is
-available. Check or installation failures exit nonzero. If the initial check
-fails, no JSON result is written; after an installation failure, the result is
-written before the error exit. Cancellation uses the usual signal exit codes.
+`--json` returns one result on stdout with `status: "managed"`,
+`installation: "fork"`, `can_self_update: false`, and source-build instructions.
+`current_version` identifies the running build. `latest_version`, `release_url`,
+and `executable` are empty because no release lookup or executable inspection
+occurs. Both `update` and `update --check` exit 0 when this guidance is shown.
 
 ## Use from scripts
 
@@ -884,7 +830,7 @@ when storage is unavailable, then return the matching nonzero code.
 | Symptom | What to check next |
 | --- | --- |
 | A documented option is unknown | Run `line version` and `line COMMAND --help`; compare with the docs at that release tag. Check for updates with `line update --check`. |
-| `encryption_required` | LINE reports no E2EE support and strict mode blocked the send. Omit `--require-e2ee` to use HTTPS/TLS; LINE can read that content. |
+| `encryption_required` | LINE reports no E2EE support and the send was blocked. Use `--require-e2ee=false` to allow HTTPS/TLS for this send; LINE can read that content. |
 | `encrypted_image_unavailable` | Encrypted native images are disabled. Try `--file` for the original bytes; file support checks still apply. |
 | Login or an SSH service cannot access storage | Run `line auth status --check --json` as the same user and environment. Follow [headless diagnostics](#diagnose-a-headless-service); do not delete session files to bypass the error. |
 | A send fails or is absent from recent history | Inspect LINE before repeating it. Use [structured errors](#structured-errors) to distinguish a confirmed action from an unknown outcome. Recent history is not proof of non-delivery. |
@@ -906,22 +852,25 @@ line send --help
 
 ### Build from source
 
-You need Git and Go 1.27.2. macOS also needs Xcode Command Line Tools
+You need Git and Go 1.27.3. macOS also needs Xcode Command Line Tools
 and CGO for Keychain support.
 
 On macOS or Linux:
 
 ```sh
-git clone https://github.com/kongesque/line-cli.git
-cd line-cli
-./install.sh
+git clone https://github.com/punnkrit/line-scheduler-client.git
+cd line-scheduler-client
+go mod verify
+./build.sh
+./bin/line help
 ```
 
 On Windows PowerShell:
 
 ```powershell
-git clone https://github.com/kongesque/line-cli.git
-Set-Location line-cli
+git clone https://github.com/punnkrit/line-scheduler-client.git
+Set-Location line-scheduler-client
+go mod verify
 $env:CGO_ENABLED = "0"
 go build -trimpath -o .\bin\line.exe ./cmd/line
 .\bin\line.exe help
@@ -933,8 +882,8 @@ and fake APIs; live LINE tests require explicit authorization.
 
 ### Current limitations
 
-- When LINE reports no E2EE support, sends use HTTPS/TLS; LINE can read the
-  content. `--require-e2ee` blocks these sends. See
+- Sends require E2EE by default. `--require-e2ee=false` allows HTTPS/TLS when
+  LINE reports no E2EE support; LINE can read that content. See
   [LINE's Encryption Report 2025](https://www.lycorp.co.jp/en/privacy-security/security/transparency/encryption-report/2025/).
 - One saved LINE account per operating-system user.
 - QR login is experimental and requires usable Letter Sealing keys.

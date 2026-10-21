@@ -41,3 +41,16 @@
 
 PLAN.md
 PLAN-1.md
+
+# Personal account material and local audit/build artifacts
+.env
+.env.*
+*.dpapi
+session.enc
+session.enc.*
+*.har
+/captures/
+/local/
+/audit-tools/
+/LINE-CLI-AUDIT.md
+!/docs/FORK_SECURITY.md

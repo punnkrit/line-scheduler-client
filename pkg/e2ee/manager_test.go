@@ -7,9 +7,69 @@ import (
 	"strings"
 	"testing"
 
+	gen "github.com/kongesque/line-cli/pkg"
 	"github.com/kongesque/line-cli/pkg/line"
 	"github.com/kongesque/line-cli/pkg/ltsm"
 )
+
+func TestDirectEncryptionV2FailureDoesNotFallBack(t *testing.T) {
+	const chat = "u00000000000000000000000000000000"
+	const from = "u11111111111111111111111111111111"
+	// Reuse a prepared channel with a missing runner handle so V2 fails after
+	// preparation. Falling back to V1 would replace the original error with
+	// "V1 encrypt failed: unknown channel: -1".
+	public := base64.StdEncoding.EncodeToString(append([]byte{9}, make([]byte, 31)...))
+	for _, raw := range []bool{false, true} {
+		name := "text"
+		if raw {
+			name = "raw"
+		}
+		t.Run(name, func(t *testing.T) {
+			m := &Manager{
+				runner:        &gen.Runner{},
+				myRawKeyID:    11,
+				peerPublic:    map[int]string{},
+				keyByRawID:    map[int]int{},
+				channelByPair: map[string]int{"11|22": -1},
+				sequence:      map[string]int{},
+			}
+			var chunks []string
+			var err error
+			if raw {
+				chunks, err = m.EncryptMessageV2Raw(chat, from, 1, public, 11, 22, 14, []byte(`{"synthetic":true}`))
+			} else {
+				chunks, err = m.EncryptMessageV2(chat, from, 1, public, 11, 22, 0, "synthetic")
+			}
+			if err == nil || err.Error() != "unknown channel: -1" || chunks != nil {
+				t.Fatalf("V2 failure fell back or returned chunks: %v", err)
+			}
+		})
+	}
+}
+
+func TestDirectEncryptionGeneratedKeyV2FailsClosed(t *testing.T) {
+	m, err := NewManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := m.runner.KeyGenerate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := m.runner.KeyGenerate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := m.runner.KeyGetPublic(peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.RegisterUnwrappedKey(11, sender)
+	chunks, err := m.EncryptMessageV2("u00000000000000000000000000000000", "u11111111111111111111111111111111", sender, public, 11, 22, 0, "synthetic")
+	if err == nil || chunks != nil {
+		t.Fatal("unsupported generated-key V2 path returned ciphertext")
+	}
+}
 
 func TestIsFatalLTSMError(t *testing.T) {
 	if !isFatalLTSMError(ltsm.ErrAbort) {

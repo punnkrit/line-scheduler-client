@@ -15,9 +15,9 @@ import (
 
 var version = "dev"
 
-// Only official release builds opt into standalone updates; source builds keep
-// their installation method even when their version matches a published tag.
-var distribution = "source"
+// Fork builds are managed from their source checkout and never consult or
+// install upstream releases, including when their version matches upstream.
+var distribution = "fork"
 
 func main() { os.Exit(run()) }
 

@@ -43,6 +43,11 @@ func New(current, distribution string) *Service {
 
 func (s *Service) Check(ctx context.Context) (Plan, error) {
 	p := Plan{CurrentVersion: s.current}
+	if s.distribution == "fork" {
+		p.Installation, p.Status = "fork", "managed"
+		p.Instructions = "This fork is managed from source. Stop LINE CLI commands and watchers, review changes in your fork checkout, then rebuild with ./build.sh. Upstream release checks and binary updates are disabled."
+		return p, nil
+	}
 	path, err := s.executable()
 	if err != nil {
 		return p, errors.New("could not locate this executable; check releases at " + repositoryURL + "/releases/latest")

@@ -39,6 +39,27 @@ func updateApp() (*App, *fakeUpdater, *bytes.Buffer, *bytes.Buffer) {
 	return a, f, out, diagnostics
 }
 
+func TestForkUpdateShowsSourceGuidanceWithoutLocks(t *testing.T) {
+	for _, args := range [][]string{nil, {"--check"}, {"--json"}, {"--check", "--json"}} {
+		out, diagnostics := new(bytes.Buffer), new(bytes.Buffer)
+		a := &App{Out: out, Err: diagnostics, Version: "v0.5.0", Distribution: "fork"}
+		a.Lock = func() (func(), error) { t.Fatal("fork update opened session"); return nil, nil }
+		a.WatchLock = func() (func(), error) { t.Fatal("fork update acquired watcher lock"); return nil, nil }
+		if err := a.Run(append([]string{"update"}, args...)); err != nil {
+			t.Fatal(err)
+		}
+		if diagnostics.Len() != 0 || !strings.Contains(out.String(), "managed from source") || strings.Contains(out.String(), "An update is available") {
+			t.Fatalf("unexpected output: %q %q", out.String(), diagnostics.String())
+		}
+		if strings.Contains(strings.Join(args, " "), "--json") {
+			var p update.Plan
+			if err := json.Unmarshal(out.Bytes(), &p); err != nil || p.Status != "managed" || p.CanSelfUpdate {
+				t.Fatalf("unexpected JSON plan: %+v %v", p, err)
+			}
+		}
+	}
+}
+
 func TestUpdateValidationNeverChecksOrLocks(t *testing.T) {
 	for _, args := range [][]string{{"--help"}, {"--unknown"}, {"extra"}, {"--check", "extra"}} {
 		a, f, _, _ := updateApp()

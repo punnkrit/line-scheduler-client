@@ -242,7 +242,7 @@ func (m *Manager) EncryptMessageV2(chatID, from string, myKeyID int, peerPubKeyB
 
 // EncryptMessageV2Raw encrypts a raw JSON payload (bytes) instead of forcing a text object.
 // This is required for media messages.
-// Falls back to V1 encryption if V2 fails (some clients like iOS still use V1).
+// A V2 failure must not return V1 chunks that the caller would label as V2.
 func (m *Manager) EncryptMessageV2Raw(chatID, from string, myKeyID int, peerPubKeyB64 string, senderKeyID, receiverKeyID, contentType int, payloadJSON []byte) ([]string, error) {
 	chanID, seq, err := m.ensureChannelForEncrypt(chatID, myKeyID, senderKeyID, receiverKeyID, peerPubKeyB64)
 	if err != nil {
@@ -251,11 +251,7 @@ func (m *Manager) EncryptMessageV2Raw(chatID, from string, myKeyID int, peerPubK
 
 	ctB64, err := m.runner.ChannelEncryptV2(chanID, chatID, from, senderKeyID, receiverKeyID, contentType, seq, string(payloadJSON))
 	if err != nil {
-		if isFatalLTSMError(err) {
-			return nil, err
-		}
-		// Fall back to V1 encryption (some clients like iOS still use V1).
-		return m.encryptV1Chunks(chanID, senderKeyID, receiverKeyID, payloadJSON)
+		return nil, err
 	}
 	ctBytes, err := base64.StdEncoding.DecodeString(ctB64)
 	if err != nil {

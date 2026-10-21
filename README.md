@@ -1,227 +1,99 @@
-# LINE CLI: command-line client for personal LINE accounts
+# LINE Scheduler Client
 
-English | [繁體中文（台灣）](README.zh-TW.md) | [日本語](README.ja.md) | [ภาษาไทย](README.th.md)
+A security-focused fork of [kongesque/line-cli](https://github.com/kongesque/line-cli), an unofficial command-line client for a personal LINE account. It can send messages to existing conversations without a LINE Official Account.
 
-**LINE CLI** is an unofficial Go CLI for your personal LINE account. Read chats,
-send messages and files, download attachments, and stream events from your terminal.
-Use interactive prompts or JSON output on **macOS, Linux, and Windows**.
-No bot account or LINE Messaging API setup is required.
+This repository currently provides the **sender**, not a complete hosted scheduler. A scheduling interface, durable job queue, and cloud deployment are separate work. Do not assume a message has been scheduled merely because this CLI is installed.
 
-[![CI](https://github.com/kongesque/line-cli/actions/workflows/cli.yml/badge.svg)](https://github.com/kongesque/line-cli/actions/workflows/cli.yml)
-[![Release](https://img.shields.io/github/v/release/kongesque/line-cli?filter=v*&label=release)](https://github.com/kongesque/line-cli/releases/latest)
-[![Go](https://img.shields.io/github/go-mod/go-version/kongesque/line-cli)](go.mod)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+## Changes in this fork
 
-[Install](#install-line-cli) · [Quick start](#quick-start-send-your-first-line-message) · [Commands](#line-messaging-commands) · [Automation](#automate-line-with-json-and-shell-scripts) · [Full guide](docs/CLI.md)
+- Build with Go **1.27.3**, which fixes the certificate-validation issue GO-2026-6809 present in the original v0.5.0 executable.
+- Require Letter Sealing end-to-end encryption by default. An explicit `--require-e2ee=false` permits transport-only encryption when LINE reports that E2EE is unavailable.
+- Fail when V2 direct-message encryption fails, instead of silently retrying with V1 while labelling the message V2. Explicitly negotiated V1 group support is preserved.
+- Harden the build/update path so this fork's changes are not silently replaced by an upstream release.
 
-![LINE CLI: personal LINE messages, files, and automation from the terminal](banner.png)
+**Known compatibility blocker:** the generated/transpiled-key V2 encryption path has a known upstream runtime failure. This fork refuses that send instead of substituting V1 ciphertext; compatibility with a real saved account session remains unverified.
 
-The README on `main` follows development. For a released version, use the
-README at its tag and `line COMMAND --help`. See the [changelog](CHANGELOG.md).
+These changes reduce specific risks; they do not certify the client as completely safe. See [review findings and limits](docs/FORK_SECURITY.md).
 
-## Install LINE CLI
+## Build from source
 
-### macOS: Homebrew
+Install the exact Go 1.27.3 toolchain from [go.dev](https://go.dev/dl/). No administrator privileges or LINE credentials are needed to build.
 
 ```sh
-brew install kongesque/tap/line-cli
+git clone https://github.com/punnkrit/line-scheduler-client.git
+cd line-scheduler-client
+go mod verify
+./build.sh
+./bin/line version
 ```
 
-### macOS and Linux: standalone installer
-
-```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/kongesque/line-cli/main/scripts/install-release.sh | sh
-```
-
-The installer detects your OS and architecture, verifies the release checksum,
-and installs `line` into `~/.local/bin`. Reopen your terminal if prompted to
-apply its `PATH` setup.
-To use it in the current shell, run `export PATH="$HOME/.local/bin:$PATH"`.
-
-**Linux desktop:** on Debian or Ubuntu, install credential storage before login:
-
-```sh
-sudo apt install libsecret-tools gnome-keyring
-```
-
-Run `line` from a desktop session with the Secret Service keyring running and
-unlocked in the same D-Bus session. On a server or over SSH without a desktop
-keyring, use the headless login below.
-
-### Windows: PowerShell
+On Windows, from PowerShell with Go 1.27.3 available:
 
 ```powershell
-irm https://raw.githubusercontent.com/kongesque/line-cli/main/scripts/install-release.ps1 | iex
+go mod verify
+go build -trimpath -o .\bin\line.exe ./cmd/line
+.\bin\line.exe version
 ```
 
-The installer verifies the checksum and adds `line.exe` to your user `PATH`.
-Reopen PowerShell if needed. Windows needs no additional keyring package.
+Use this fork's source. The upstream Homebrew package and upstream install scripts do not include these changes. The included remote release installer entrypoints intentionally refuse upstream downloads and print source-build instructions.
 
-You can also [download a release](https://github.com/kongesque/line-cli/releases/latest)
-or [build from source](#build-and-contribute). Release binaries are unsigned and
-not notarized.
-
-Check your installation:
+## Sign in
 
 ```sh
-line version
+./bin/line login --qr
 ```
 
-## Quick start: send your first LINE message
+Scan the QR code with LINE on your phone and approve the login. Keep the QR code and PIN private. QR login avoids typing a password into the CLI, but still grants a personal-client session. Email/password login is also supported; enter passwords only at the local hidden prompt.
 
-> [!IMPORTANT]
-> Signing in may replace your existing LINE Chrome extension or another
-> Chrome-style client session. LINE CLI saves one account per operating-system user.
+The CLI stores session tokens and encryption keys using the operating system's credential protection. A Linux server without a desktop keyring requires the documented headless storage setup; ordinary desktop Linux and Windows have different requirements. See [session setup](docs/CLI.md#account-and-session).
 
-### 1. Sign in with LINE on your phone
+Signing in can replace an existing Chrome-style LINE client session.
+
+## Send a text
+
+List conversations and identify the exact recipient before sending:
 
 ```sh
-line login
+./bin/line chats --show-ids
+./bin/line send CHAT_ID --text "A test message" --require-e2ee --timeout 30s
 ```
 
-Scan the terminal QR code with LINE's scanner on your phone, approve the login,
-and enter the displayed PIN if asked. Wait for **Session saved securely**.
-QR login requires Letter Sealing to be enabled.
-
-If your LINE account has an email address and password configured, you can use
-this instead, including when QR login fails:
+Use the full chat ID in automation. Names can be duplicated or changed. For text that should not appear in process arguments, supply UTF-8 text through standard input:
 
 ```sh
-line login --email you@example.com
+./bin/line send CHAT_ID --stdin --require-e2ee --json --timeout 30s < message.txt
 ```
 
-Enter your password at the private prompt and complete phone verification if
-asked. Your password is never saved.
+Keep message input files outside the repository. The JSON receipt reports the message ID and encryption mode. A timeout or lost response can mean that a message was already sent: inspect the target conversation before retrying.
 
-<details>
-<summary>Linux server or SSH: log in without a desktop keyring</summary>
+## Scheduling design
 
-Use your regular Unix account and an interactive terminal (`ssh -t user@host`
-when connecting remotely). Headless storage requires `/usr/bin/systemd-creds`
-from systemd 256–259 and a working user credential broker.
+A future scheduler should persist each job's recipient, due time, status, and send receipt. It must distinguish a confirmed failure from an unknown delivery outcome. Blindly rerunning the CLI can produce duplicate messages, even though one CLI invocation does not replay a send automatically.
+
+The CLI can run on demand; continuous desktop automation is not required by its architecture. Unattended login persistence and real delivery still need testing in the chosen host environment.
+
+## Security and privacy
+
+- This is an unofficial client with broad personal-account capabilities, not a token restricted to one chat or sending only.
+- Treat the machine holding its session as trusted. OS credential encryption does not protect against every program running as the same user.
+- No passwords, tokens, QR codes, private messages, contact lists, live captures, or session databases belong in this repository or in issue reports.
+- All repository tests use synthetic data unless explicitly configured otherwise. Do not enable live-account tests in CI.
+- The custom protocol/crypto runtime has not received a complete independent cryptographic audit. LINE changes can break compatibility, and this project cannot guarantee account-policy outcomes.
+
+For current upstream features and limitations, see the [CLI guide](docs/CLI.md). Translated upstream guides may describe upstream defaults; this README defines this fork's security policy.
+
+## Development
 
 ```sh
-line login --headless
+go test ./internal/... ./cmd/line ./pkg/line/... ./pkg/e2ee
+go test ./pkg ./pkg/ltsm
+./scripts/security-check.sh ./bin/line
 ```
 
-For email/password login, use `line login --headless --email you@example.com`
-instead. Accept **Host key; no TPM** when prompted: this storage does not protect
-against a complete disk copy or provide TPM protection. Initial enrollment still
-requires terminal interaction and phone approval.
+Review upstream changes before integrating them. Keep the compiler security pin, dependency checksums, and encryption regression tests current.
 
-Wait for **Session saved securely**, then run `line auth status --check`.
-Continue with the commands below as the same Unix user, without `--headless`.
+## Attribution and license
 
-</details>
+This work builds on [Kongesque's LINE CLI](https://github.com/kongesque/line-cli) and its [Beeper LINE](https://github.com/beeper/line) origins. Upstream history and copyright notices are retained. The code remains under the [MIT License](LICENSE).
 
-### 2. Browse your chats and send a message
-
-```sh
-line whoami     # Confirm your account
-line chats      # List conversations
-line messages   # Choose a chat and read recent messages
-line send       # Choose a recipient and enter your message
-```
-
-The CLI prompts for missing details in an interactive terminal. Use Ctrl-C to
-cancel, or pass a chat name directly as shown below.
-
-A successful send prints `Sent to … · end-to-end encrypted` or
-`Sent to … · transport encrypted (no E2EE)`.
-
-## LINE messaging commands
-
-| What you want to do | Command |
-| --- | --- |
-| Find friends | `line contacts --search "Alice"` |
-| Read recent messages | `line messages "Alice" --limit 20` |
-| Send a text message | `line send "Alice" --text "Hello!"` |
-| Send a file | `line send "Alice" --file ./report.pdf` |
-| Download photos, video, audio, or files | `line download` |
-| Stream live events | `line watch` |
-
-Replace `Alice` with a full chat ID or a complete chat name that matches only
-one chat (case-insensitive). If names are duplicated, run
-`line chats --search "Alice" --show-ids` and use the full ID shown.
-Run `line COMMAND --help` for options; the
-[CLI guide](docs/CLI.md#daily-commands) covers replies, reactions, and pagination.
-
-## Automate LINE with JSON and shell scripts
-
-Add `--json` for structured output on stdout; diagnostics go to stderr.
-`--json` and `--stdin` disable prompts, so supply all required arguments.
-Use full chat IDs in scripts because names can change.
-
-```sh
-line chats --search "Family" --json
-line messages CHAT_ID --limit 20 --json
-line send CHAT_ID --stdin --json < message.txt
-line watch --json > events.ndjson
-```
-
-Get `CHAT_ID` from `line chats --json`. Watch output is NDJSON; consumers should
-deduplicate by revision. See the [JSON reference](docs/JSON.md) for fields and errors.
-
-Remote changes are attempted once. If a send or other action loses its response,
-check LINE before repeating it.
-
-## Letter Sealing encryption and session security
-
-LINE CLI uses Letter Sealing, LINE's end-to-end encryption, for supported chats
-and message types. HTTPS/TLS protects messages in transit, including when LINE
-explicitly reports that Letter Sealing is unavailable. Letter Sealing also keeps
-message content private from LINE's servers. Use `--require-e2ee` if you need
-end-to-end encryption for every send.
-
-See [sending and encryption](docs/CLI.md#send-messages-and-files) and
-[session storage](docs/CLI.md#where-your-session-is-stored).
-
-## Limitations
-
-- Letter Sealing coverage depends on the chat and content type. If LINE
-  explicitly reports no support, messages use HTTPS/TLS transport encryption. See
-  [LINE's Encryption Report 2025](https://www.lycorp.co.jp/en/privacy-security/security/transparency/encryption-report/2025/).
-- History contains up to 100 messages per page. Use `--page --json` and its cursor
-  for older available history; full history is not guaranteed. Reading does not
-  mark messages as read; some older encrypted messages may be unavailable.
-- File sending and media downloads are limited to 20 MiB. `--file` preserves
-  original bytes and appears as an ordinary file. Encrypted native image sending
-  is disabled; non-E2EE images require explicit LINE capability. Native
-  audio/video and sticker sends, and external media URL downloads, are unsupported.
-- LINE CLI uses LINE's Chrome-style protocol. Server changes can affect
-  compatibility, and some protocol paths need broader live validation.
-
-## Update LINE CLI
-
-Stop running commands and watchers before upgrading; concurrent old and new
-versions are unsupported.
-
-```sh
-line update --check   # Check the latest release without installing
-line update           # Update where supported, or show upgrade instructions
-```
-
-Homebrew users should run `brew upgrade line-cli`. See the
-[update guide](docs/CLI.md#updating-line-cli) for supported installation methods.
-
-## Documentation and help
-
-Read the [CLI guide](docs/CLI.md) or browse the [documentation index](docs/README.md).
-Report bugs and request features through [GitHub Issues](https://github.com/kongesque/line-cli/issues).
-Include `line version`, your OS, the command, and a redacted error.
-Omit passwords, tokens, QR login values, and private messages.
-
-## Build and contribute
-
-Source builds require **Go 1.27.2**; macOS also needs Xcode Command Line Tools
-and CGO. See [build from source](docs/CLI.md#build-from-source) and
-[contributing](CONTRIBUTING.md) for setup and development checks.
-
-## License and provenance
-
-LINE CLI is not affiliated with or endorsed by LINE. It is derived from
-[beeper/line](https://github.com/beeper/line); shared protocol and crypto code
-retain their upstream copyright and provenance. The Matrix connector and Beeper
-deployment stack are not part of this project.
-
-Distributed under the [MIT License](LICENSE).
+Not affiliated with or endorsed by LINE or LY Corporation.

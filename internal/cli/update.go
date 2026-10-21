@@ -19,7 +19,7 @@ func (a *App) updateCommand(args []string) error {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
 	fs.Usage = func() {
-		fmt.Fprint(a.Err, "Usage: line update [--check] [--json]\nInstalls the latest stable release for supported standalone installations.\nOther installations show upgrade instructions. No LINE login is required.\nStop other LINE CLI commands and watchers before installing.\n\n")
+		fmt.Fprint(a.Err, "Usage: line update [--check] [--json]\nShows upgrade instructions. Fork builds are managed from source; upstream\nrelease checks and binary updates are disabled. No LINE login is required.\nStop other LINE CLI commands and watchers before rebuilding.\n\n")
 		fs.PrintDefaults()
 	}
 	check := fs.Bool("check", false, "check versions and show the next step without changing files")
@@ -41,11 +41,18 @@ func (a *App) updateCommand(args []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if !*jsonOutput {
+	if !*jsonOutput && a.Distribution != "fork" {
 		fmt.Fprintln(a.Err, "Checking for updates...")
 	}
 	p, err := u.Check(ctx)
 	if err != nil {
+		return err
+	}
+	if p.Status == "managed" {
+		if *jsonOutput {
+			return a.json(p)
+		}
+		_, err = fmt.Fprintf(a.Out, "Current version: %s\n%s\n", terminalText(p.CurrentVersion), p.Instructions)
 		return err
 	}
 	if !*jsonOutput {

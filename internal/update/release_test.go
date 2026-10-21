@@ -45,6 +45,34 @@ func TestCheckUsesOnlyOfficialMetadata(t *testing.T) {
 	}
 }
 
+func TestForkUpdateNeverAccessesNetworkOrExecutable(t *testing.T) {
+	for _, version := range []string{"dev", "v0.5.0"} {
+		t.Run(version, func(t *testing.T) {
+			s := New(version, "fork")
+			s.executable = func() (string, error) {
+				t.Fatal("fork update inspected the executable")
+				return "", nil
+			}
+			s.client = &http.Client{Transport: transport(func(*http.Request) (*http.Response, error) {
+				t.Fatal("fork update contacted a release server")
+				return nil, nil
+			})}
+			p, err := s.Check(context.Background())
+			if err != nil || p.CurrentVersion != version || p.Status != "managed" || p.Installation != "fork" || p.CanSelfUpdate || p.ReleaseURL != "" || p.LatestVersion != "" || p.UpgradeCommand != "" {
+				t.Fatalf("unexpected fork update plan: %+v %v", p, err)
+			}
+			if !strings.Contains(p.Instructions, "rebuild with ./build.sh") {
+				t.Fatalf("missing source build guidance: %+v", p)
+			}
+			// Even a forged installable plan cannot override the fork policy.
+			p.CanSelfUpdate, p.LatestVersion = true, "v0.6.0"
+			if err := s.Install(context.Background(), p); err == nil {
+				t.Fatal("fork accepted a binary installation")
+			}
+		})
+	}
+}
+
 func TestReleaseErrorsAreBoundedAndDoNotLeakBodies(t *testing.T) {
 	for _, tt := range []struct {
 		code int

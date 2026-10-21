@@ -1,3 +1,5 @@
+> Fork note: See [the English README](README.md) for this fork's source-build instructions and stricter encryption defaults. The guide below is retained from upstream.
+
 # LINE CLI：個人 LINE 帳號的指令列用戶端
 
 [English](README.md) | 繁體中文（台灣） | [日本語](README.ja.md) | [ภาษาไทย](README.th.md)
@@ -213,7 +215,7 @@ Homebrew 請使用 `brew upgrade line-cli`。其他安裝方式請參閱
 
 ## 建置與參與開發
 
-原始碼建置需要 **Go 1.27.2**；macOS 另需 Xcode Command Line Tools 與 CGO。
+原始碼建置需要 **Go 1.27.3**；macOS 另需 Xcode Command Line Tools 與 CGO。
 設定與開發檢查請參閱[原始碼建置](docs/CLI.zh-TW.md#build-from-source)及
 [參與開發指南](CONTRIBUTING.md)（英文）。
 

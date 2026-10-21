@@ -19,7 +19,7 @@ from the upstream project.
 distinguishes TLS transport encryption from Letter Sealing (E2EE) and documents
 media E2EE in modern official clients. This does not establish this CLI's media
 interoperability. Non-E2EE sends still use HTTPS/TLS, but LINE can read their
-content. Automatic non-E2EE delivery does not disable TLS or change LINE account
+content. Explicit non-E2EE delivery does not disable TLS or change LINE account
 settings; the capability checks below still apply.
 
 ### Login and keys
@@ -37,7 +37,7 @@ are runtime dependencies, even though some functions are invoked indirectly.
 `internal/messaging/client.go` and `keys.go` negotiate peer keys, restore historical
 keys, and register group keys only during an explicit send with complete membership.
 Missing keys, network errors, and ambiguous membership stop the send.
-The [send policy](#send-policy-and-attachment-changes) below defines automatic
+The [send policy](#send-policy-and-attachment-changes) below defines explicit
 non-E2EE delivery, strict mode, and separate file/image capability checks.
 
 History resolves the sender/receiver key IDs in each encrypted message. It does
@@ -58,6 +58,8 @@ Mutations are never automatically replayed after an uncertain response. The
 
 ## Security change record
 
+Upstream live observations below are inherited historical evidence, not live validation of this fork. The generated/transpiled-key V2 path currently fails inside the upstream runtime; this fork refuses that send instead of returning V1 ciphertext labelled V2. See [fork findings and validation](FORK_SECURITY.md).
+
 For user-facing upgrade actions, see the [changelog](../CHANGELOG.md#unreleased).
 This record separates implementation changes, synthetic verification, and
 authorized live observations. The dated checks below apply to their recorded
@@ -65,9 +67,9 @@ revisions and environments; they do not replace the next release's CI gates.
 
 | Path | Current restriction and validation |
 | --- | --- |
-| Text | E2EE preferred; explicit unavailability permits HTTPS/TLS delivery unless strict mode is requested. One authorized encrypted group send/readback succeeded. |
-| Generic files | Explicit file capability required. Explicit non-E2EE capability permits automatic HTTPS/TLS delivery. Synthetic encrypted roundtrip passed; live encrypted delivery remains unverified. Plaintext roundtrips succeeded in the authorized group and direct chat. |
-| Native images | Encrypted sending disabled before remote mutations. Non-E2EE delivery requires explicit capability; native-image live interoperability remains unverified. |
+| Text | E2EE required by default; explicit unavailability plus `--require-e2ee=false` permits HTTPS/TLS delivery. One authorized encrypted group send/readback succeeded. |
+| Generic files | Explicit file capability required. Non-E2EE capability plus `--require-e2ee=false` permits HTTPS/TLS delivery. Synthetic encrypted roundtrip passed; live encrypted delivery remains unverified. Plaintext roundtrips succeeded in the authorized group and direct chat. |
+| Native images | Encrypted sending disabled before remote mutations. Non-E2EE delivery requires explicit capability and `--require-e2ee=false`; native-image live interoperability remains unverified. |
 
 ### Send policy and attachment changes
 
@@ -77,10 +79,10 @@ revisions and environments; they do not replace the next release's CI gates.
 - Encrypted native image sending is disabled before uploads or key registration:
   the existing image/preview representation reuses an AES-CTR encryption stream.
   Generic encrypted `--file` is available only with an explicit encrypted-file
-  media capability. Explicit non-E2EE capability permits HTTPS/TLS delivery.
-- CLI sends prefer Letter Sealing and automatically permit non-E2EE delivery
-  only after an explicit account/server capability signal. `--require-e2ee`
-  blocks that mode before remote actions. Missing keys, transport failures, and
+  media capability. Non-E2EE capability plus `--require-e2ee=false` permits HTTPS/TLS delivery.
+- CLI sends require Letter Sealing by default. Non-E2EE delivery requires both
+  an explicit `--require-e2ee=false` opt-out and an account/server capability
+  signal. Missing keys, transport failures, and
   the encrypted-image restriction still stop sends. HTTPS/TLS protects non-E2EE transfers, but LINE
   can read their content. Human receipts identify the mode; JSON reports
   `encrypted: false` without extra output or prompts.
@@ -124,11 +126,11 @@ fail explicitly and may require a reviewed budget adjustment.
 
 ### Toolchain and vulnerability scans
 
-Builds select Go 1.27.2, including CI/release jobs. `build.sh` checks the actual
+Builds select Go 1.27.3, including CI/release jobs. `build.sh` checks the actual
 compiler selected by `GO`/`GOTOOLCHAIN`; older compilers and unreviewed versions
-fail before building. The minimum module directive is also Go 1.27.2. This
+fail before building. The minimum module directive is also Go 1.27.3. This
 replaces the earlier Go 1.26+ requirement. To select the reviewed compiler:
-`GOTOOLCHAIN=go1.27.2 ./build.sh`. Future toolchain updates should change the
+`GOTOOLCHAIN=go1.27.3 ./build.sh`. Future toolchain updates should change the
 module, CI pins, and compiler guard together after advisory review.
 
 Run `./scripts/security-check.sh ./bin/line` for source and binary scans using
@@ -136,6 +138,13 @@ pinned govulncheck v1.9.0. Release jobs scan each target before packaging.
 [GO-2026-6611](https://pkg.go.dev/vuln/GO-2026-6611) affects HTTP/2 clients;
 [Go 1.27.2](https://go.dev/doc/devel/release#go1.27.0) contains its fix. Scanner
 findings require applicability review; there is no standard-library exemption.
+
+This fork advances the compiler to Go 1.27.3 for
+[GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809), which affects
+`crypto/x509.Certificate.Verify`. The audited upstream v0.5.0 executable used
+Go 1.27.2 and was reported affected by govulncheck v1.9.0. The historical
+validation records below describe their original compiler and scan dates;
+they do not establish the vulnerability status of a new build.
 
 Audit triage on 2026-10-18 with govulncheck v1.9.0 and Go 1.27.2: source scan
 reported no reachable or imported-package vulnerabilities. Module-only findings

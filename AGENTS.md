@@ -8,7 +8,7 @@ This repository contains no Matrix connector or homeserver integration.
 
 ## Build and checks
 
-Requirements: Go 1.27.2. macOS needs CGO and Xcode Command Line Tools for Keychain.
+Requirements: Go 1.27.3. macOS needs CGO and Xcode Command Line Tools for Keychain.
 Linux and Windows support `CGO_ENABLED=0`. No libolm or ffmpeg is required.
 
 ```sh
@@ -43,10 +43,10 @@ fixtures, platform integration requirements, and CI coverage.
 
 ## Behavior and validation
 
-Prefer Letter Sealing whenever supported. When LINE explicitly reports no E2EE
-support, CLI sends proceed over HTTPS/TLS without encryption confirmation and
-report the mode in the receipt (`encrypted: false` in JSON). `--require-e2ee`
-blocks non-E2EE delivery. Scripts, JSON output/errors, and `--stdin` never prompt.
+Require Letter Sealing by default. Only an explicit `--require-e2ee=false` permits
+HTTPS/TLS delivery when LINE explicitly reports no E2EE support. Receipts report
+that mode (`encrypted: false` in JSON). Scripts, JSON output/errors, and `--stdin`
+never prompt for an encryption downgrade.
 Preserve explicit capability checks before plaintext fallback. Missing or malformed
 keys and transport failures must not silently downgrade encryption.
 Only an explicit send may register a group key, and it needs complete membership.

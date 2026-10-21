@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -199,46 +198,30 @@ func TestInstallRejectsDowngradesAndUnsupportedOwnership(t *testing.T) {
 	}
 }
 
-func TestOfficialInstallerCreatesRecognizableReceipt(t *testing.T) {
+func TestForkReleaseInstallerRefusesWithoutDownload(t *testing.T) {
 	fixture := t.TempDir()
 	bin := filepath.Join(fixture, "tools")
 	installDir := filepath.Join(fixture, "custom install")
+	networkMarker := filepath.Join(fixture, "network-invoked")
 	if err := os.Mkdir(bin, 0755); err != nil {
 		t.Fatal(err)
 	}
-	archive := makeArchive(t, []*tar.Header{{Name: "./line", Typeflag: tar.TypeReg, Mode: 0755}}, "synthetic release")
-	name := archiveName(runtime.GOOS, runtime.GOARCH)
-	if err := os.WriteFile(filepath.Join(fixture, name), archive, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fixture, "SHA256SUMS.txt"), fmt.Appendf(nil, "%x  %s\n", sha256.Sum256(archive), name), 0600); err != nil {
-		t.Fatal(err)
-	}
-	// Run the real installer with synthetic downloads in a custom directory. The
-	// custom directory avoids changing shell profiles or the user's installation.
-	curl := `#!/bin/sh
-set -eu
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -o) shift; output=$1 ;;
-    https://*) url=$1 ;;
-  esac
-  shift
-done
-cp "$UPDATE_FIXTURE_DIR/${url##*/}" "$output"
-`
-	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(curl), 0755); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"curl", "wget"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nprintf invoked > \"$UPDATE_NETWORK_MARKER\"\nexit 99\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "../../scripts/install-release.sh")
-	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "LINE_CLI_INSTALL_DIR="+installDir, "UPDATE_FIXTURE_DIR="+fixture, "LINE_CLI_DOWNLOAD_BASE=https://example.invalid/releases")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("installer failed: %v\n%s", err, output)
+	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "LINE_CLI_INSTALL_DIR="+installDir, "UPDATE_NETWORK_MARKER="+networkMarker, "LINE_CLI_DOWNLOAD_BASE=https://example.invalid/releases")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "Build from source") {
+		t.Fatalf("installer did not refuse with build guidance: %v\n%s", err, output)
 	}
-	s := New("v0.3.0", "standalone")
-	if s.installation(filepath.Join(installDir, "line")) != "standalone" {
-		t.Fatal("installer did not create a recognized installation")
+	for _, path := range []string{networkMarker, installDir} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("installer downloaded or modified files: %s %v", path, err)
+		}
 	}
 }

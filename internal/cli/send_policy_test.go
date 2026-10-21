@@ -75,12 +75,12 @@ func TestSendEncryptionPolicyAcrossContent(t *testing.T) {
 				if diagnostics.Len() != 0 {
 					t.Fatal("explicit flag displayed an interactive prompt")
 				}
-				if flagName == "--require-e2ee=true" {
+				if flagName != "--require-e2ee=false" {
 					if err == nil || api.sends != 0 || api.uploads != 0 || store.state.LastReqSeq != 0 || out.Len() != 0 {
 						t.Fatal("strict mode permitted a send or changed state")
 					}
-					if machineDetail(t, err).Code != "encryption_required" || !strings.Contains(err.Error(), "default send policy") || !strings.Contains(err.Error(), "HTTPS") {
-						t.Fatal("missing strict-policy refusal or default-policy guidance")
+					if machineDetail(t, err).Code != "encryption_required" || !strings.Contains(err.Error(), "--require-e2ee=false") || !strings.Contains(err.Error(), "HTTPS") {
+						t.Fatal("missing strict-policy refusal or explicit opt-out guidance")
 					}
 					return
 				}
@@ -94,7 +94,7 @@ func TestSendEncryptionPolicyAcrossContent(t *testing.T) {
 				var result messaging.SendResult
 				if json.Unmarshal(out.Bytes(), &result) != nil || result.Encrypted || result.ID != "message-id" ||
 					api.sends != 1 || api.uploads != wantUploads || result.RequestSequence == 0 || result.RequestSequence != store.state.LastReqSeq {
-					t.Fatal("default mode did not preserve a single send and its non-E2EE receipt")
+					t.Fatal("explicit opt-out did not preserve a single send and its non-E2EE receipt")
 				}
 			})
 		}
@@ -102,12 +102,16 @@ func TestSendEncryptionPolicyAcrossContent(t *testing.T) {
 }
 
 func TestDefaultSendDoesNotBypassMissingKeys(t *testing.T) {
-	for _, flagName := range []string{"--require-e2ee=false", "--require-e2ee=true"} {
+	for _, flagName := range []string{"default", "--require-e2ee=false", "--require-e2ee=true"} {
 		t.Run(flagName, func(t *testing.T) {
 			a, api, store, out, diagnostics, _ := consentFixture(t, "unused")
 			store.state.NoE2EE = false
 			store.state.ExportedKeys = nil
-			err := a.Run([]string{"send", "id:u-peer", flagName, "--text", "synthetic", "--json"})
+			args := []string{"send", "id:u-peer", "--text", "synthetic", "--json"}
+			if flagName != "default" {
+				args = append(args, flagName)
+			}
+			err := a.Run(args)
 			if err == nil || api.sends != 0 || api.uploads != 0 || store.state.LastReqSeq != 0 || out.Len() != 0 || diagnostics.Len() != 0 {
 				t.Fatal("flag bypassed missing keys or prompted for a downgrade")
 			}
@@ -159,32 +163,32 @@ func consentFile(t *testing.T) string {
 	return path
 }
 
-func TestInteractiveFileSendsWithoutConfirmation(t *testing.T) {
+func TestInteractiveFileOptOutSendsWithoutConfirmation(t *testing.T) {
 	a, api, store, out, diagnostics, locked := consentFixture(t, "")
 	a.In = checkedInput{t: t, locked: locked, Reader: strings.NewReader(""), onRead: func() {
 		t.Fatal("explicit send asked for encryption confirmation")
 	}}
-	if err := a.Run([]string{"send", "id:u-peer", "--file", consentFile(t)}); err != nil {
+	if err := a.Run([]string{"send", "id:u-peer", "--require-e2ee=false", "--file", consentFile(t)}); err != nil {
 		t.Fatal(err)
 	}
 	if api.sends != 1 || api.uploads != 1 || store.state.LastReqSeq == 0 || string(api.data) != "synthetic file\n" || !strings.Contains(out.String(), "transport encrypted (no E2EE)") || diagnostics.Len() != 0 || *locked {
-		t.Fatal("default send failed, prompted, or retained lock")
+		t.Fatal("explicit opt-out failed, prompted, or retained lock")
 	}
 }
 
 func TestGuidedMessageWithoutEncryptionConfirmation(t *testing.T) {
 	a, api, _, diagnostics, _ := guidedApp(t, "/New\n1\nsynthetic\n")
-	if err := a.Run([]string{"send"}); err != nil || api.sends != 1 || api.sent.Text != "synthetic" || strings.Contains(diagnostics.String(), "Send this message?") {
+	if err := a.Run([]string{"send", "--require-e2ee=false"}); err != nil || api.sends != 1 || api.sent.Text != "synthetic" || strings.Contains(diagnostics.String(), "Send this message?") {
 		t.Fatal("guided send failed", err)
 	}
 }
 
-func TestSendScriptsUseAutomaticNonE2EEWithoutPrompt(t *testing.T) {
+func TestSendScriptsUseExplicitNonE2EEWithoutPrompt(t *testing.T) {
 	for _, mode := range []string{"noninteractive", "json", "json-errors", "stdin"} {
 		t.Run(mode, func(t *testing.T) {
 			a, api, store, _, diagnostics, _ := consentFixture(t, "unused")
 			store.state.NoE2EE = true
-			args := []string{"send", "id:u-peer", "--text", "synthetic"}
+			args := []string{"send", "id:u-peer", "--require-e2ee=false", "--text", "synthetic"}
 			switch mode {
 			case "noninteractive":
 				a.Interactive = false
@@ -193,12 +197,12 @@ func TestSendScriptsUseAutomaticNonE2EEWithoutPrompt(t *testing.T) {
 			case "json-errors":
 				args = append([]string{"--error-format=json"}, args...)
 			case "stdin":
-				args = []string{"send", "id:u-peer", "--stdin"}
+				args = []string{"send", "id:u-peer", "--require-e2ee=false", "--stdin"}
 				a.In = strings.NewReader("synthetic")
 			}
 			err := a.Run(args)
 			if err != nil || api.sends != 1 || store.state.LastReqSeq == 0 {
-				t.Fatal("default script send failed", err)
+				t.Fatal("explicit script opt-out failed", err)
 			}
 			if diagnostics.Len() != 0 {
 				t.Fatal("script displayed prompt")
@@ -237,7 +241,7 @@ func TestSendStopsOnInvalidPreparation(t *testing.T) {
 			case "cancelled":
 				cancel()
 			}
-			if err := a.Run([]string{"send", "id:u-peer", "--file", consentFile(t)}); err == nil {
+			if err := a.Run([]string{"send", "id:u-peer", "--require-e2ee=false", "--file", consentFile(t)}); err == nil {
 				t.Fatal("changed preparation allowed send")
 			}
 			if api.sends != 0 || api.uploads != 0 || store.state.LastReqSeq != 0 || out.Len() != 0 || *locked {
@@ -260,7 +264,7 @@ func TestInteractiveSendDoesNotPromptOrReplayAfterFailures(t *testing.T) {
 			case "upload":
 				api.err = errors.New("synthetic upload failure")
 			}
-			if err := a.Run([]string{"send", "id:u-peer", "--file", consentFile(t)}); err == nil {
+			if err := a.Run([]string{"send", "id:u-peer", "--require-e2ee=false", "--file", consentFile(t)}); err == nil {
 				t.Fatal("expected failure")
 			}
 			if failure == "send" || failure == "upload" {

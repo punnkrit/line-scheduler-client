@@ -94,8 +94,8 @@ func TestFileWireEnvelopeProtectsKeyAndName(t *testing.T) {
 	}
 }
 
-// Keep the envelope probe above independent of Letter Sealing; this separate
-// roundtrip exercises the real manager/runner and recipient crypto as well.
+// Keep the envelope probe above independent of Letter Sealing. These tests
+// separately cover the unsupported generated-key runner and real V2 crypto.
 type realFileCrypto struct {
 	*fakeCrypto
 	manager   *e2ee.Manager
@@ -103,10 +103,13 @@ type realFileCrypto struct {
 }
 
 func (r *realFileCrypto) MyKeyIDs() (int, int, error) { return 11, r.senderKey, nil }
+func (r *realFileCrypto) EncryptMessageV2(chat, from string, own int, pub string, sender, receiver, kind int, text string) ([]string, error) {
+	return r.manager.EncryptMessageV2(chat, from, own, pub, sender, receiver, kind, text)
+}
 func (r *realFileCrypto) EncryptMessageV2Raw(chat, from string, own int, pub string, sender, receiver, kind int, payload []byte) ([]string, error) {
 	return r.manager.EncryptMessageV2Raw(chat, from, own, pub, sender, receiver, kind, payload)
 }
-func TestEncryptedFileRealRecipientRoundTrip(t *testing.T) {
+func TestGeneratedKeyV2SendFailsClosed(t *testing.T) {
 	runner, err := gen.GetRunner()
 	if err != nil {
 		t.Fatal("runner initialization failed")
@@ -114,10 +117,6 @@ func TestEncryptedFileRealRecipientRoundTrip(t *testing.T) {
 	senderKey, err := runner.KeyGenerate()
 	if err != nil {
 		t.Fatal("synthetic sender key failed")
-	}
-	public, err := runner.KeyGetPublic(senderKey)
-	if err != nil {
-		t.Fatal("synthetic sender public key failed")
 	}
 	receiver, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
@@ -135,43 +134,52 @@ func TestEncryptedFileRealRecipientRoundTrip(t *testing.T) {
 	c.crypto = &realFileCrypto{fakeCrypto: crypto, manager: manager, senderKey: senderKey}
 	api := &fileAPI{fakeAPI: f}
 	c.Session.NewClient = func(string) session.API { return api }
+	if result, err := c.Send(chat, "synthetic"); err == nil || result != nil || f.sent != nil {
+		t.Fatal("unsupported V2 text path attempted a message or returned success")
+	}
 	attachment := Attachment{Name: "synthetic-private.txt", Data: []byte("synthetic confidential bytes")}
-	result, err := c.SendFile(chat, attachment, "")
-	if err != nil || result == nil || !result.Encrypted || len(f.sent.Chunks) != 5 {
-		t.Fatalf("real encrypted file send failed: %v", err)
+	if result, err := c.SendFile(chat, attachment, ""); err == nil || result != nil || f.sent != nil {
+		t.Fatal("unsupported V2 attachment path attempted a message or returned success")
+	} else if !strings.Contains(err.Error(), "an uploaded file may remain") || len(api.uploaded) == 0 {
+		t.Fatal("attachment failure lost the prior upload outcome")
 	}
-	if f.sent.ContentMetadata["ENC_KM"] != "" || f.sent.ContentMetadata["FILE_NAME"] != "" {
-		t.Fatal("secrets outside sealed payload")
-	}
-	senderPublic, err := base64.StdEncoding.DecodeString(public)
+}
+
+// Exercise the production pure-Go V2 cipher and attachment authentication
+// directly. This does not establish generated-key Manager compatibility.
+func TestEncryptedFileV2PayloadRecipientRoundTrip(t *testing.T) {
+	sender, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatal("invalid synthetic public key")
+		t.Fatal("synthetic sender key failed")
 	}
-	recipient, err := ltsm.NewChannel(receiver.Bytes(), senderPublic)
+	receiver, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal("synthetic receiver key failed")
+	}
+	sending, err := ltsm.NewChannel(sender.Bytes(), receiver.PublicKey().Bytes())
+	if err != nil {
+		t.Fatal("sender channel failed")
+	}
+	recipient, err := ltsm.NewChannel(receiver.Bytes(), sender.PublicKey().Bytes())
 	if err != nil {
 		t.Fatal("recipient channel failed")
 	}
-	parts := make([][]byte, 3)
-	for i := range parts {
-		parts[i], err = base64.StdEncoding.DecodeString(f.sent.Chunks[i])
-		if err != nil {
-			t.Fatal("invalid chunk encoding")
-		}
+	attachment := Attachment{Name: "synthetic-private.txt", Data: []byte("synthetic confidential bytes")}
+	encryptedFile, key, err := encryptFile(attachment.Data)
+	if err != nil {
+		t.Fatal("attachment encryption failed")
 	}
-	// The generated-key runner can use the manager's existing V1 compatibility
-	// path. Decode the actual wire format with the production recipient crypto.
-	order := []int{0, 2, 1}
-	decrypt := func(cipher []byte) ([]byte, error) {
-		return recipient.DecryptV2(chat, c.state.MID, 11, 22, 14, cipher)
+	payloadJSON, err := json.Marshal(map[string]string{"fileName": attachment.Name, "keyMaterial": key})
+	if err != nil {
+		t.Fatal("attachment payload encoding failed")
 	}
-	if len(parts[0]) == 8 {
-		order = []int{0, 1, 2}
-		decrypt = recipient.DecryptV1
+	const chat = "u22222222222222222222222222222222"
+	const from = "u11111111111111111111111111111111"
+	cipher, err := sending.EncryptV2(chat, from, 11, 22, 14, 1, payloadJSON)
+	if err != nil {
+		t.Fatal("V2 payload encryption failed")
 	}
-	var cipher []byte
-	for _, i := range order {
-		cipher = append(cipher, parts[i]...)
-	}
+	decrypt := func(data []byte) ([]byte, error) { return recipient.DecryptV2(chat, from, 11, 22, 14, data) }
 	payload, err := decrypt(cipher)
 	if err != nil {
 		t.Fatal("recipient could not authenticate sealed payload")
@@ -180,12 +188,16 @@ func TestEncryptedFileRealRecipientRoundTrip(t *testing.T) {
 	if json.Unmarshal(payload, &decoded) != nil || decoded["fileName"] != attachment.Name {
 		t.Fatal("recipient payload lost filename")
 	}
-	plain, err := decryptFile(api.uploaded, decoded["keyMaterial"])
+	plain, err := decryptFile(encryptedFile, decoded["keyMaterial"])
 	if err != nil || !bytes.Equal(plain, attachment.Data) {
 		t.Fatal("recipient could not authenticate attachment")
 	}
 	cipher[len(cipher)-1] ^= 1
 	if _, err := decrypt(cipher); err == nil {
 		t.Fatal("tampered sealed payload accepted")
+	}
+	encryptedFile[len(encryptedFile)-1] ^= 1
+	if _, err := decryptFile(encryptedFile, decoded["keyMaterial"]); err == nil {
+		t.Fatal("tampered attachment accepted")
 	}
 }
