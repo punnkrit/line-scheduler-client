@@ -72,6 +72,8 @@ The helper creates a private S3 artifact bucket and the line-scheduler
 CloudFormation stack. Build artifacts, account-specific deployment state and
 recovery data stay in .local, which is ignored. Request JSON containing secrets
 uses a Linux memory-backed file descriptor, not command arguments or disk.
+Artifact-bucket state is scoped to the authenticated account and region. A legacy
+deployment.json is reused only when its bucket belongs to the current account.
 
 Before loading a real account, run:
 
@@ -113,9 +115,11 @@ cancellation, early/stale jobs, claim-before-send, uncertain outcomes, authoriza
 and IAM isolation. Normal CI never accesses a personal LINE session.
 
 Deployment validation confirmed a scheduled dummy receipt, duplicate suppression,
-encrypted cloud state restoration, and one authorized live encrypted send.
-The delayed cloud test and full browser sending flow remain unverified.
-Do not describe the deployment as production-ready until those checks pass.
+encrypted cloud state restoration, and authorized immediate and delayed encrypted
+sends through the private browser interface. The delayed test was accepted 11 seconds
+after its scheduled time. Both receipts remained visible after reopening the Site.
+Unauthenticated requests were rejected, and the sender token was absent from the
+browser build. These checks verify the tested flow, not a guarantee of future delivery.
 Account-specific notices, identifiers and test recipients stay outside public source.
 
 ## Operations and recovery

@@ -50,10 +50,15 @@ def deploy():
         info=zipfile.ZipInfo("cloudline");info.external_attr=0o100755<<16;info.compress_type=zipfile.ZIP_DEFLATED
         z.writestr(info,(LOCAL/"cloudline").read_bytes())
     artifact="builds/"+hashlib.sha256(package.read_bytes()).hexdigest()+".zip"
-    state=LOCAL/"deployment.json"
+    account=call("sts","get-caller-identity")["Account"]
+    state=LOCAL/("deployment-"+account+"-"+REGION+".json")
+    legacy=LOCAL/"deployment.json"
+    if not state.exists() and legacy.exists():
+        previous=json.loads(legacy.read_text())
+        if previous.get("bucket", "").startswith("line-scheduler-artifacts-"+account+"-"):
+            state.write_text(json.dumps(previous));state.chmod(0o600)
     if state.exists(): settings=json.loads(state.read_text())
     else:
-        account=call("sts","get-caller-identity")["Account"]
         bucket="line-scheduler-artifacts-"+account+"-"+secrets.token_hex(4)
         call("s3api","create-bucket",payload={"Bucket":bucket,"CreateBucketConfiguration":{"LocationConstraint":REGION}})
         call("s3api","put-public-access-block",payload={"Bucket":bucket,"PublicAccessBlockConfiguration":{
