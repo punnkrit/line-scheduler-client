@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/color"
@@ -11,9 +12,12 @@ import (
 	_ "image/png"
 	"math"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/kongesque/line-cli/internal/fault"
+	"github.com/kongesque/line-cli/internal/session"
 )
 
 // MaxImagePixels bounds decoding memory independently of the compressed file size.
@@ -23,9 +27,38 @@ const MaxImageDimension = 16384
 // PreparedImage contains validated, normalized still-image bytes. Private fields
 // prevent callers from bypassing PrepareImage's decoding and resource limits.
 type PreparedImage struct {
-	file          Attachment
-	preview       []byte
-	width, height int
+	file                  Attachment
+	preview               []byte
+	width, height         int
+	fullWidth, fullHeight int
+	group                 *ImageGroup
+}
+
+// ImageGroup uses LINE's server-issued group ID. The first image requests ID 0;
+// following images must use the confirmed ID, never a locally invented ID.
+type ImageGroup struct {
+	ID    string `json:"id"`
+	Index int    `json:"index"`
+	Total int    `json:"total"`
+}
+
+// Group IDs are opaque server tokens, not necessarily numeric message IDs.
+var imageGroupID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,256}$`)
+
+func (g ImageGroup) Validate() error {
+	if g.Total < 2 || g.Total > 10 || g.Index < 1 || g.Index > g.Total || !imageGroupID.MatchString(g.ID) || (g.Index == 1 && g.ID != "0") || (g.Index > 1 && g.ID == "0") {
+		return errors.New("invalid photo group; send 2 to 10 images in order using the confirmed group ID")
+	}
+	return nil
+}
+
+func (c *Client) SendGroupedImageContext(ctx context.Context, chat string, img PreparedImage, group ImageGroup) (*SendResult, error) {
+	if err := group.Validate(); err != nil {
+		return nil, err
+	}
+	img.group = &group
+	// Grouped image sends always require Letter Sealing.
+	return c.SendImageContext(ctx, chat, img, "")
 }
 
 // PrepareImage accepts JPEG and nonanimated PNG, regardless of filename suffix.
@@ -72,7 +105,8 @@ func PrepareImage(ctx context.Context, file Attachment) (*PreparedImage, error) 
 		w, h = h, w
 	}
 	scale := math.Min(1, math.Sqrt(float64(1280*1280)/float64(w*h)))
-	full, err := imageJPEG(ctx, src, orientation, max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale)), 60)
+	fw, fh := max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale))
+	full, err := imageJPEG(ctx, src, orientation, fw, fh, 60)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +117,7 @@ func PrepareImage(ctx context.Context, file Attachment) (*PreparedImage, error) 
 		return nil, err
 	}
 	name := strings.TrimSuffix(file.Name, filepath.Ext(file.Name)) + ".jpg"
-	prepared := &PreparedImage{file: Attachment{Name: name, Data: full}, preview: preview, width: pw, height: ph}
+	prepared := &PreparedImage{file: Attachment{Name: name, Data: full}, preview: preview, width: pw, height: ph, fullWidth: fw, fullHeight: fh}
 	if err := prepared.file.Validate(); err != nil {
 		return nil, err
 	}
@@ -92,6 +126,42 @@ func PrepareImage(ctx context.Context, file Attachment) (*PreparedImage, error) 
 
 func (c *Client) SendImageContext(ctx context.Context, chat string, img PreparedImage, replyTo string) (*SendResult, error) {
 	return c.SendImageWithOptionsContext(ctx, chat, img, replyTo, SendOptions{})
+}
+
+// SendImagesContext sends photos sequentially in independent groups of at most
+// ten. It stops at the first error and returns all confirmed receipts, including
+// an accepted photo whose grouping could not be confirmed. Never retry the batch.
+func (c *Client) SendImagesContext(ctx context.Context, chat string, images []PreparedImage) ([]SendResult, error) {
+	if len(images) < 1 || len(images) > 50 {
+		return nil, errors.New("select 1 to 50 photos")
+	}
+	for _, img := range images {
+		if len(img.file.Data) == 0 || len(img.preview) == 0 {
+			return nil, errors.New("all photos must be prepared before sending")
+		}
+	}
+	var receipts []SendResult
+	for start := 0; start < len(images); start += 10 {
+		end := min(start+10, len(images))
+		gid := "0"
+		for index := start; index < end; index++ {
+			var result *SendResult
+			var err error
+			if end-start == 1 {
+				result, err = c.SendImageContext(ctx, chat, images[index], "")
+			} else {
+				result, err = c.SendGroupedImageContext(ctx, chat, images[index], ImageGroup{ID: gid, Index: index - start + 1, Total: end - start})
+			}
+			if result != nil {
+				receipts = append(receipts, *result)
+				gid = result.GroupID
+			}
+			if err != nil {
+				return receipts, err
+			}
+		}
+	}
+	return receipts, nil
 }
 
 func (c *Client) SendImageWithOptionsContext(ctx context.Context, chat string, img PreparedImage, replyTo string, options SendOptions) (*SendResult, error) {
@@ -108,11 +178,38 @@ func (c *Client) uploadAttachment(ctx context.Context, file *Attachment, img *Pr
 	if img == nil {
 		return c.uploadFile(ctx, file, metadata, op)
 	}
-	return nil, encryptedImageUnavailable()
-}
-
-func encryptedImageUnavailable() error {
-	return fault.New("encrypted_image_unavailable", "preparation", "Encrypted image sending isn't available yet. Nothing was sent.\nTry --file to send the original image instead.", nil)
+	// Encrypt exactly ONCE. The photo and preview objects contain the SAME
+	// ciphertext, not two different plaintexts encrypted with one CTR stream.
+	// Receivers already authenticate/decrypt both objects with the same key.
+	// A fresh random key is generated independently for every photo.
+	data, key, err := encryptFile(file.Data)
+	if err != nil {
+		return nil, err
+	}
+	var oid string
+	if err := c.attempt(ctx, op, "attachment_upload", false, func(api session.API) (err error) {
+		oid, err = api.UploadOBSWithSIDContext(ctx, data, "emi")
+		return
+	}); err != nil {
+		return nil, err
+	}
+	if oid == "" {
+		op.Steps[len(op.Steps)-1].Outcome = fault.Unknown
+		return nil, errors.New("image upload returned no object ID")
+	}
+	if err := c.attempt(ctx, op, "preview_upload", false, func(api session.API) error {
+		return api.UploadOBSWithOIDAndSIDContext(ctx, data, oid+"__ud-preview", "emi")
+	}); err != nil {
+		return nil, err
+	}
+	metadata["OID"], metadata["SID"] = oid, "emi"
+	metadata["FILE_SIZE"] = strconv.Itoa(len(file.Data))
+	thumb, err := json.Marshal(map[string]int{"width": img.fullWidth, "height": img.fullHeight})
+	if err != nil {
+		return nil, err
+	}
+	metadata["MEDIA_THUMB_INFO"] = string(thumb)
+	return json.Marshal(map[string]string{"keyMaterial": key, "fileName": file.Name})
 }
 
 // Read EXIF orientation without copying metadata (including GPS) into output.

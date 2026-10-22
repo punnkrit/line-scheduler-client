@@ -69,21 +69,23 @@ revisions and environments; they do not replace the next release's CI gates.
 | --- | --- |
 | Text | E2EE required by default; explicit unavailability plus `--require-e2ee=false` permits HTTPS/TLS delivery. One authorized encrypted group send/readback succeeded. |
 | Generic files | Explicit file capability required. Non-E2EE capability plus `--require-e2ee=false` permits HTTPS/TLS delivery. Synthetic encrypted roundtrip passed; live encrypted delivery remains unverified. Plaintext roundtrips succeeded in the authorized group and direct chat. |
-| Native images | Encrypted sending disabled before remote mutations. Non-E2EE delivery requires explicit capability and `--require-e2ee=false`; native-image live interoperability remains unverified. |
+| Native images | Encrypted once per photo; identical ciphertext uploaded as full and preview, with a fresh key per photo. Groups of at most ten require E2EE and confirmed server group IDs. Synthetic real-V2 and independent WebCrypto recipient checks pass; live interoperability remains unverified. |
 
 ### Send policy and attachment changes
 
 - Generic encrypted files keep attachment key material and filenames exclusively
   in the authenticated Letter Sealing payload. Historical downloads still accept
   compatible old envelopes with conflict checks.
-- Encrypted native image sending is disabled before uploads or key registration:
-  the existing image/preview representation reuses an AES-CTR encryption stream.
-  Generic encrypted `--file` is available only with an explicit encrypted-file
-  media capability. Non-E2EE capability plus `--require-e2ee=false` permits HTTPS/TLS delivery.
+- Native photos avoid encrypting different full/preview plaintexts with one CTR
+  stream. One bounded normalized JPEG is encrypted exactly once; both objects
+  receive the same ciphertext and HMAC. This trades extra preview bandwidth for
+  confidentiality without changing recipient key derivation or wire format.
+  A new random key is generated per image. Keys and names remain inside the
+  authenticated Letter Sealing payload. See [the protocol evidence](protocol/endpoints/image-send.md).
 - CLI sends require Letter Sealing by default. Non-E2EE delivery requires both
   an explicit `--require-e2ee=false` opt-out and an account/server capability
   signal. Missing keys, transport failures, and
-  the encrypted-image restriction still stop sends. HTTPS/TLS protects non-E2EE transfers, but LINE
+  unsupported media capabilities still stop sends. HTTPS/TLS protects non-E2EE transfers, but LINE
   can read their content. Human receipts identify the mode; JSON reports
   `encrypted: false` without extra output or prompts.
 - The messaging API's zero-value `SendOptions` still requires E2EE. The CLI

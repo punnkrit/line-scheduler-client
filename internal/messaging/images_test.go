@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"hash/crc32"
 	"image"
@@ -96,18 +97,28 @@ func TestImageSendFlows(t *testing.T) {
 	for _, chat := range []string{"u-peer", "c-group", "r-room"} {
 		for _, flow := range []int{1, 2} {
 			t.Run(chat+string(rune('0'+flow)), func(t *testing.T) {
-				c, f, crypto, store := setup(t, false)
-				// Missing group keys must not cause registration before refusing images.
-				f.groupErr = line.ErrGroupKeyNotFound
+				c, f, crypto, _ := setup(t, false)
+				f.group = &line.E2EEGroupSharedKey{GroupKeyID: 33, Creator: "u-self", CreatorKeyID: 11, ReceiverKeyID: 11, EncryptedSharedKey: "wrapped"}
 				api := &imageAPI{fakeAPI: f, flow: flow}
-				c.crypto = &fileCrypto{fakeCrypto: crypto}
+				crypt := &fileCrypto{fakeCrypto: crypto}
+				c.crypto = crypt
 				c.Session.NewClient = func(string) session.API { return api }
 				for range 2 {
 					result, err := c.SendImageWithOptionsContext(context.Background(), chat, *img, "", SendOptions{AllowPlaintext: true})
 					if flow == 2 {
-						var safe *fault.Error
-						if !errors.As(err, &safe) || safe.Code != "encrypted_image_unavailable" || result != nil || len(api.order) != 0 || f.sends != 0 || f.registrations != 0 || store.state.LastReqSeq != 0 || len(api.full) != 0 || len(api.preview) != 0 {
-							t.Fatal("encrypted image did not fail closed before side effects")
+						if err != nil || result == nil || !result.Encrypted || f.sent.ContentType != 1 || len(f.sent.Chunks) != 5 || !bytes.Equal(api.full, api.preview) || len(api.full) == 0 {
+							t.Fatal("encrypted image flow", err)
+						}
+						if f.sent.ContentMetadata["ENC_KM"] != "" || f.sent.ContentMetadata["FILE_NAME"] != "" {
+							t.Fatal("key or filename leaked")
+						}
+						var payload map[string]string
+						if json.Unmarshal(crypt.payloadSent, &payload) != nil {
+							t.Fatal("invalid sealed payload")
+						}
+						plain, e := decryptFile(api.full, payload["keyMaterial"])
+						if e != nil || !bytes.Equal(plain, img.file.Data) {
+							t.Fatal("recipient failed", e)
 						}
 						continue
 					}
@@ -121,7 +132,7 @@ func TestImageSendFlows(t *testing.T) {
 }
 func TestImageFailuresAndCancellationNeverReplay(t *testing.T) {
 	img := imageFixture(t)
-	for _, flow := range []int{1} {
+	for _, flow := range []int{1, 2} {
 		stages := []string{"send", "attachment_upload"}
 		if flow == 2 {
 			stages = append(stages, "preview_upload")

@@ -337,14 +337,14 @@ line send CHAT_ID --file ./report.pdf --require-e2ee --json
 檔案與文字的加密支援會分開檢查。支援資訊缺漏或無效、缺少金鑰、成員資料不完整及傳輸錯誤，都不會允許停用 E2EE。
 只有明確執行群組傳送，且掌握所有目前成員時，才能註冊新群組金鑰。
 
-**原生圖片：** 完整圖片與預覽會重複使用加密串流，因此目前停用加密的 `--image` 傳送。
-系統會在上傳、註冊群組金鑰或建立訊息前停止，自動採用非 E2EE 傳送也無法繞過此限制。
-可用 `--file` 將原圖當作一般檔案傳送，但仍須通過上述檔案支援檢查。
-
-只有 LINE 明確支援非 E2EE 圖片時才能使用下列指令；傳輸有 HTTPS/TLS 保護，但 LINE 可讀取圖片：
+**原生圖片：** `--image` 預設要求 Letter Sealing。
+每張圖片只加密一次，將相同密文用於完整圖片和預覽，每張圖片使用新的金鑰。
+重複指定 `--image` 可依序傳送最多50張圖片，每組最多10張，多出的圖片另開一組。
+失敗或無法確認收據時立即停止，不會自動重送。若要保留原始位元組，請使用 `--file`。
+尚未驗證實際LINE應用程式的顯示效果。請參閱[英文詳細說明](CLI.md#send-messages-and-files)。
 
 ```sh
-line send CHAT_ID --image ./screenshot.png --json
+line send CHAT_ID --image ./one.png --image ./two.jpg --json
 ```
 
 `--image` 接受實際 JPEG 或靜態 PNG 資料，上限為 20 MiB、4,000 萬像素，單邊不超過 16384 像素。
@@ -816,7 +816,7 @@ Linux 也會在 `$HOME/.config/line-cli` 的 `native-paths.json` 記錄曾偵測
 | --- | --- |
 | 不認得指南中的選項 | 執行 `line version` 與 `line COMMAND --help`，比對該發行標籤的指南。用 `line update --check` 檢查更新。 |
 | `encryption_required` | 不支援 E2EE，已由嚴格模式阻止傳送。移除 `--require-e2ee`即可透過 HTTPS/TLS 傳送，但 LINE 可讀取內容。 |
-| `encrypted_image_unavailable` | 目前停用加密圖片。可用 `--file` 傳送原始位元組，但仍須通過檔案支援檢查。 |
+| `encrypted_image_unavailable` | Legacy error from older client releases; see [current photo support](CLI.md#send-messages-and-files). |
 | SSH 或服務無法存取儲存 | 以相同使用者與環境執行 `line auth status --check --json`，查看[服務診斷](#diagnose-a-headless-service)。不要刪除工作階段檔案來繞過錯誤。 |
 | 傳送失敗或最近歷史中找不到 | 重做前先查看 LINE。用[結構化錯誤](#structured-errors)區分已確認與不明結果；最近歷史中沒有不代表未送達。 |
 | 歷史頁面較短或部分無法解密 | 除非 `exhausted` 為真，否則可繼續使用游標。請檢查各訊息狀態與結束代碼；舊歷史或金鑰可能已無法取得。 |

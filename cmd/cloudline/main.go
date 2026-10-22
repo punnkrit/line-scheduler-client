@@ -21,15 +21,17 @@ import (
 )
 
 type request struct {
-	Action   string `json:"action"`
-	Key      string `json:"key"`
-	Blob     string `json:"blob"`
-	Chat     string `json:"chat"`
-	Text     string `json:"text"`
-	FileName string `json:"file_name"`
-	FileData []byte `json:"file_data"`
-	QRKey    string `json:"qr_key"`
-	Attempt  string `json:"attempt"`
+	Action         string                `json:"action"`
+	Key            string                `json:"key"`
+	Blob           string                `json:"blob"`
+	Chat           string                `json:"chat"`
+	Text           string                `json:"text"`
+	FileName       string                `json:"file_name"`
+	FileData       []byte                `json:"file_data"`
+	ImageGroup     *messaging.ImageGroup `json:"image_group,omitempty"`
+	TimeoutSeconds int                   `json:"timeout_seconds,omitempty"`
+	QRKey          string                `json:"qr_key"`
+	Attempt        string                `json:"attempt"`
 }
 type pipeStore struct {
 	state    *session.State
@@ -175,7 +177,11 @@ func run(r request, in *json.Decoder, out *json.Encoder) (any, error) {
 	}
 	store := &pipeStore{state: s, aead: a, in: in, out: out}
 	manager := session.NewManager(store)
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Second)
+	deadline := 80 * time.Second
+	if r.TimeoutSeconds > 0 && r.TimeoutSeconds < 80 {
+		deadline = time.Duration(r.TimeoutSeconds) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 	switch r.Action {
 	case "probe-read":
@@ -190,19 +196,37 @@ func run(r request, in *json.Decoder, out *json.Encoder) (any, error) {
 			return nil, e
 		}
 		return json.RawMessage(output.Bytes()), nil
-	case "send", "send-file":
-		if r.Action == "send-file" {
+	case "send", "send-file", "send-image":
+		var img *messaging.PreparedImage
+		if r.Action == "send-file" || r.Action == "send-image" {
 			if e := (messaging.Attachment{Name: r.FileName, Data: r.FileData}).Validate(); e != nil {
 				return nil, e
 			}
 			defer clear(r.FileData)
+		}
+		if r.Action == "send-image" {
+			img, e = messaging.PrepareImage(ctx, messaging.Attachment{Name: r.FileName, Data: r.FileData})
+			if e != nil {
+				return map[string]any{"status": "failed", "error": "Photo must be a valid still JPEG or PNG within the image limits. Nothing was sent."}, nil
+			}
+			if r.ImageGroup != nil {
+				if e = r.ImageGroup.Validate(); e != nil {
+					return nil, e
+				}
+			}
 		}
 		client, e := messaging.New(manager)
 		if e != nil {
 			return nil, e
 		}
 		var result *messaging.SendResult
-		if r.Action == "send-file" {
+		if r.Action == "send-image" {
+			if r.ImageGroup != nil {
+				result, e = client.SendGroupedImageContext(ctx, r.Chat, *img, *r.ImageGroup)
+			} else {
+				result, e = client.SendImageContext(ctx, r.Chat, *img, "")
+			}
+		} else if r.Action == "send-file" {
 			result, e = client.SendFileContext(ctx, r.Chat, messaging.Attachment{Name: r.FileName, Data: r.FileData}, "")
 		} else {
 			result, e = client.SendContext(ctx, r.Chat, r.Text)
@@ -213,9 +237,13 @@ func run(r request, in *json.Decoder, out *json.Encoder) (any, error) {
 			if errors.As(e, &mutation) && mutation.Mutation.Attempted {
 				status = "unknown"
 			}
-			return map[string]any{"status": status, "error": "LINE did not confirm delivery. Check LINE before sending again."}, nil
+			failure := map[string]any{"status": status, "error": "LINE did not confirm delivery. Check LINE before sending again."}
+			if result != nil {
+				failure["message_id"], failure["encrypted"], failure["accepted"] = result.ID, result.Encrypted, true
+			}
+			return failure, nil
 		}
-		return map[string]any{"status": "sent", "message_id": result.ID, "encrypted": result.Encrypted}, nil
+		return map[string]any{"status": "sent", "message_id": result.ID, "encrypted": result.Encrypted, "group_id": result.GroupID}, nil
 	case "check":
 		if s.Invalidated || s.NoE2EE || len(s.ExportedKeys) == 0 {
 			return nil, errors.New("session needs login")

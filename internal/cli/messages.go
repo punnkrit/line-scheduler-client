@@ -40,7 +40,9 @@ func (a *App) messageCommand(command string, args []string) error {
 	var stdin bool
 	var requireE2EE bool
 	var replyTo string
-	var filePath, imagePath string
+	var filePath string
+	var imagePaths []string
+	var preparedImages []messaging.PreparedImage
 	var preparedImage *messaging.PreparedImage
 	var mentionsJSON string
 	var mentions []messaging.Mention
@@ -60,7 +62,7 @@ func (a *App) messageCommand(command string, args []string) error {
 		fs.StringVar(&text, "text", "", "message text")
 		fs.BoolVar(&stdin, "stdin", false, "read UTF-8 message text from stdin")
 		fs.StringVar(&filePath, "file", "", "send a generic file attachment (up to 20 MiB)")
-		fs.StringVar(&imagePath, "image", "", "send a native still image (JPEG/PNG, up to 20 MiB / 40 million pixels; converted to JPEG; no --reply-to)")
+		fs.Func("image", "send a native JPEG/PNG photo; repeat for up to 50 photos in groups of 10 (Letter Sealing required for groups)", func(path string) error { imagePaths = append(imagePaths, path); return nil })
 		fs.StringVar(&replyTo, "reply-to", "", "reply to a verified message (lookup: up to 10 pages / 1000 records / 30s)")
 	}
 	if err := fs.Parse(args); err != nil {
@@ -163,35 +165,48 @@ func (a *App) messageCommand(command string, args []string) error {
 		}
 		promptText = sources == 0 && guided
 		if hasFile || hasImage {
+			paths := []string{filePath}
 			if hasImage {
-				filePath = imagePath
+				if len(imagePaths) > 50 {
+					return errors.New("select up to 50 photos")
+				}
+				if len(imagePaths) > 1 && !requireE2EE {
+					return errors.New("photo groups require Letter Sealing")
+				}
+				paths = imagePaths
 			}
-			file, err := os.Open(filePath)
-			if err != nil {
-				return fmt.Errorf("open attachment: %w", err)
-			}
-			info, err := file.Stat()
-			if err != nil {
+			for _, path := range paths {
+				filePath = path
+				file, err := os.Open(filePath)
+				if err != nil {
+					return fmt.Errorf("open attachment: %w", err)
+				}
+				info, err := file.Stat()
+				if err != nil {
+					file.Close()
+					return err
+				}
+				if !info.Mode().IsRegular() || info.Size() > messaging.MaxAttachmentBytes {
+					file.Close()
+					return errors.New("attachment must be a regular file no larger than 20 MiB")
+				}
+				data, err := io.ReadAll(io.LimitReader(file, messaging.MaxAttachmentBytes+1))
 				file.Close()
-				return err
-			}
-			if !info.Mode().IsRegular() || info.Size() > messaging.MaxAttachmentBytes {
-				file.Close()
-				return errors.New("attachment must be a regular file no larger than 20 MiB")
-			}
-			data, err := io.ReadAll(io.LimitReader(file, messaging.MaxAttachmentBytes+1))
-			file.Close()
-			if err != nil {
-				return err
-			}
-			attachment = &messaging.Attachment{Name: filepath.Base(filePath), Data: data}
-			if err := attachment.Validate(); err != nil {
-				return err
-			}
-			if hasImage {
-				preparedImage, err = messaging.PrepareImage(a.loginContext(), *attachment)
 				if err != nil {
 					return err
+				}
+				attachment = &messaging.Attachment{Name: filepath.Base(filePath), Data: data}
+				if err := attachment.Validate(); err != nil {
+					return err
+				}
+				if hasImage {
+					preparedImage, err = messaging.PrepareImage(a.loginContext(), *attachment)
+					if err != nil {
+						return err
+					}
+					preparedImages = append(preparedImages, *preparedImage)
+					clear(attachment.Data)
+					attachment = nil
 				}
 			}
 		}
@@ -209,7 +224,7 @@ func (a *App) messageCommand(command string, args []string) error {
 			}
 			text = string(data)
 		}
-		if attachment == nil && !promptText {
+		if attachment == nil && preparedImage == nil && !promptText {
 			if err := messaging.ValidateText(text); err != nil {
 				return err
 			}
@@ -276,6 +291,22 @@ func (a *App) messageCommand(command string, args []string) error {
 	if command == "send" {
 		options := messaging.SendOptions{AllowPlaintext: !requireE2EE}
 		var result *messaging.SendResult
+		if len(preparedImages) > 1 {
+			receipts, sendErr := client.SendImagesContext(a.loginContext(), chat, preparedImages)
+			if *jsonOutput {
+				if outputErr := a.json(map[string]any{"receipts": receipts, "complete": sendErr == nil}); outputErr != nil {
+					return errors.New("photo receipt output failed; inspect LINE before sending again")
+				}
+			} else {
+				if _, outputErr := fmt.Fprintf(a.Out, "%d of %d photos confirmed · end-to-end encrypted\n", len(receipts), len(preparedImages)); outputErr != nil {
+					return errors.New("photo receipt output failed; inspect LINE before sending again")
+				}
+			}
+			if sendErr != nil {
+				return fmt.Errorf("photo batch stopped after %d confirmed receipts; inspect LINE before sending again: %w", len(receipts), sendErr)
+			}
+			return nil
+		}
 		switch {
 		case preparedImage != nil:
 			result, err = client.SendImageWithOptionsContext(a.loginContext(), chat, *preparedImage, replyTo, options)

@@ -213,9 +213,10 @@ Never add captured credentials or private LINE data as fixtures.
 Synthetic image tests cover decoded JPEG/PNG validation, compressed size and
 decoded-dimension limits, animation rejection, transparent backgrounds, EXIF
 orientation, metadata removal, normalized full/preview dimensions, DM/group/room
-envelopes, and synthetic encrypted-media authentication. Encrypted native-image
-sends remain disabled before remote mutations; fixture coverage does not enable
-that path or establish live interoperability. Transport tests assert the
+envelopes, independent WebCrypto media authentication/decryption, a real V2
+Letter Sealing recipient, fresh per-photo keys, identical full/preview ciphertext,
+and sequential server-group IDs with ten-image splitting. The tests establish
+offline cryptographic compatibility, not live delivery or UI interoperability. Transport tests assert the
 media capability request, OBS SID/path/headers, and context cancellation.
 CLI tests verify pre-session input validation, explicit image-reply rejection,
 unchanged generic-file bytes, success JSON, and confirmed-message errors after
@@ -244,7 +245,7 @@ go test ./pkg/line -run '^$' -fuzz '^FuzzSSELine$' -fuzztime=15s
 Transport-limit tests include a loopback-only HTTP server to verify gzip and
 chunked transfer decoding; they need permission to bind a local ephemeral port.
 All request payloads and credentials are synthetic. Security tests cover outer
-file envelopes, recipient attachment authentication, pre-upload image refusal,
+file envelopes, recipient attachment authentication, image upload/preview failures and no mutation replay,
 encryption policy (automatic non-E2EE delivery, strict-mode rejection,
 missing-key failures, script behavior, and no mutation replay),
 redirect rejection, and response/SSE budgets. Cross builds do not substitute for

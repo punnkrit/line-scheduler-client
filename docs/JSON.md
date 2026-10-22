@@ -245,7 +245,7 @@ reports returned IDs before decryption without message text or encrypted data.
 | `decryption_failed` | History contains failed decryptions, or an attachment could not be decrypted/authenticated. |
 | `encryption_failed` | Message encryption/key preparation failed. |
 | `encryption_required` | Explicit non-E2EE capability blocked by strict mode; no message action attempted. |
-| `encrypted_image_unavailable` | Encrypted native images disabled; no upload, group-key registration, or send attempted. |
+| `encrypted_image_unavailable` | Legacy refusal from older releases; no remote send attempted. |
 | `remote_failed` | Remote request failed or a send receipt was missing. |
 | `cancelled` | Cancellation, including a signal. |
 | `deadline_exceeded` | Command timeout or the 30-second lookup budget expired; stage `lookup` identifies lookup. |
@@ -311,15 +311,18 @@ No mutation is retried for reporting failures.
 These contracts are covered with synthetic APIs and transports. They do not
 constitute a new live LINE compatibility validation.
 
-Encrypted native images currently stop at `preparation` with
-`encrypted_image_unavailable`, before upload, group-key registration, or send.
-The outcome schema retains `preview_upload` for compatibility; its presence in
-the schema does not mean encrypted image sending is enabled. Non-E2EE image upload
-follows message creation, so its failure retains the confirmed message receipt
-just like a generic-file upload. Never infer safe retries from a transport error.
+Encrypted native photos use `attachment_upload`, `preview_upload`, and `send`.
+The same encrypted blob is used for full and preview objects, with fresh random
+key material for each photo. Missing group confirmation stops the batch even
+if the photo message itself was accepted. Repeated `--image` produces an object
+with `receipts` (including optional server `group_id`) and `complete`. A partial
+failure outputs confirmed receipts and exits nonzero; never automatically replay
+that selection. Single-image JSON retains the established SendResult shape.
+Non-E2EE image upload follows message creation, so upload failure retains the
+confirmed message receipt. Never infer safe retries from a transport error.
 
 Send policy errors: `encryption_required` means Letter Sealing is unavailable
 and strict mode (`--require-e2ee`) blocked
 the send before remote actions. There is no encryption confirmation prompt in any
-output mode. `encrypted_image_unavailable` is the image restriction described
-above. Neither error permits an automatic resend or downgrade.
+output mode. `encrypted_image_unavailable` is retained in documentation for older
+client releases. Neither error permits an automatic resend or downgrade.

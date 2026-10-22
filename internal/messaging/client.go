@@ -262,6 +262,7 @@ func (c *Client) decryptPayload(ctx context.Context, chat string, msg *line.Mess
 }
 
 type SendResult struct {
+	GroupID            string `json:"group_id,omitempty"`
 	ID                 string `json:"id"`
 	ChatID             string `json:"chat_id"`
 	Encrypted          bool   `json:"encrypted"`
@@ -403,9 +404,6 @@ func (c *Client) send(ctx context.Context, chat, text, replyTo string, file *Att
 	if err := options.checkPlaintext(plain, item); err != nil {
 		return nil, err
 	}
-	if image != nil && !plain {
-		return nil, encryptedImageUnavailable()
-	}
 	groupKeyRegistered := false
 	metadata := make(map[string]string)
 	if mentionMetadata != "" {
@@ -423,6 +421,11 @@ func (c *Client) send(ctx context.Context, chat, text, replyTo string, file *Att
 		if image != nil {
 			// Chrome's ordinary image envelope has no generic-file metadata.
 			clear(metadata)
+			if image.group != nil {
+				metadata["GID"] = image.group.ID
+				metadata["GSEQ"] = strconv.Itoa(image.group.Index)
+				metadata["GTOTAL"] = strconv.Itoa(image.group.Total)
+			}
 		}
 	}
 	var chunks []string
@@ -542,7 +545,14 @@ func (c *Client) send(ctx context.Context, chat, text, replyTo string, file *Att
 			return nil, fmt.Errorf("message %s was created but file upload did not return success; inspect LINE before retrying: %w", sent.ID, err)
 		}
 	}
-	return &SendResult{ID: sent.ID, ChatID: chat, Encrypted: !plain, GroupKeyRegistered: groupKeyRegistered, RequestSequence: seq}, nil
+	result = &SendResult{ID: sent.ID, ChatID: chat, Encrypted: !plain, GroupKeyRegistered: groupKeyRegistered, RequestSequence: seq}
+	if image != nil && image.group != nil {
+		result.GroupID = sent.ContentMetadata["GID"]
+		if !imageGroupID.MatchString(result.GroupID) || result.GroupID == "0" || (image.group.Index > 1 && result.GroupID != image.group.ID) {
+			return result, errors.New("photo was accepted but its group was not confirmed; inspect LINE before sending more photos")
+		}
+	}
+	return result, nil
 }
 
 // Preserve cancellation without leaking errors from the crypto runtime.

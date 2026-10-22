@@ -228,3 +228,88 @@ func TestEncryptedFileV2PayloadRecipientRoundTrip(t *testing.T) {
 		t.Fatal("tampered attachment accepted")
 	}
 }
+
+func TestEncryptedImageV2PayloadRecipientRoundTrip(t *testing.T) {
+	runner, err := gen.GetRunner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := runner.KeyGenerate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := runner.KeyGetPublic(sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := e2ee.NewManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.RegisterUnwrappedKey(11, sender)
+	c, f, crypto, _ := setup(t, false)
+	c.state.MID = "u7taovmWXRBTY0jhEMCgFt_-Fts6Gd_T0NFMhHwH9tWc"
+	const chat = "uf82zNxJ1lQ3eCrbAgx1X6wbi3745SGfOJfcedryFex4"
+	f.key.PublicKey = base64.StdEncoding.EncodeToString(receiver.PublicKey().Bytes())
+	c.crypto = &realFileCrypto{fakeCrypto: crypto, manager: manager, senderKey: sender}
+	api := &imageAPI{fakeAPI: f, flow: 2}
+	c.Session.NewClient = func(string) session.API { return api }
+	img := imageFixture(t)
+	attachment := img.file
+	result, err := c.SendImageContext(context.Background(), chat, *img, "")
+	if err != nil || result == nil || !result.Encrypted || f.sent == nil || len(f.sent.Chunks) != 5 {
+		t.Fatalf("real V2 encrypted file preparation failed: %v", err)
+	}
+	if f.sent.ContentMetadata["e2eeVersion"] != "2" || f.sent.ContentMetadata["ENC_KM"] != "" || f.sent.ContentMetadata["FILE_NAME"] != "" {
+		t.Fatal("V2 envelope has wrong version or exposes attachment secrets")
+	}
+	senderPublic, err := base64.StdEncoding.DecodeString(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipient, err := ltsm.NewChannel(receiver.Bytes(), senderPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := make([][]byte, 3)
+	for i := range parts {
+		parts[i], err = base64.StdEncoding.DecodeString(f.sent.Chunks[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(parts[0]) != 16 || len(parts[2]) != 12 {
+		t.Fatal("not a V2 envelope")
+	}
+	cipher := append(append(append([]byte{}, parts[0]...), parts[2]...), parts[1]...)
+	decrypt := func(data []byte) ([]byte, error) {
+		return recipient.DecryptV2("u11111111111111111111111111111111", "u22222222222222222222222222222222", 11, 22, 1, data)
+	}
+	payload, err := decrypt(cipher)
+	if err != nil {
+		t.Fatalf("independent recipient rejected V2: %v", err)
+	}
+	var decoded map[string]string
+	if json.Unmarshal(payload, &decoded) != nil || decoded["fileName"] != attachment.Name {
+		t.Fatal("recipient lost filename")
+	}
+	if !bytes.Equal(api.full, api.preview) {
+		t.Fatal("preview differs from full ciphertext")
+	}
+	plain, err := decryptFile(api.full, decoded["keyMaterial"])
+	if err != nil || !bytes.Equal(plain, attachment.Data) {
+		t.Fatal("recipient could not authenticate attachment")
+	}
+	cipher[len(cipher)-1] ^= 1
+	if _, err := decrypt(cipher); err == nil {
+		t.Fatal("tampered V2 payload accepted")
+	}
+	api.full[len(api.full)-1] ^= 1
+	if _, err := decryptFile(api.full, decoded["keyMaterial"]); err == nil {
+		t.Fatal("tampered attachment accepted")
+	}
+}

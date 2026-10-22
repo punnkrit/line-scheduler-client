@@ -349,14 +349,14 @@ line send CHAT_ID --file ./report.pdf --require-e2ee --json
 対応情報の欠落や不正、鍵の不足、不完全なメンバー情報、通信障害を理由にE2EEを無効にすることはありません。
 新しいグループ鍵の登録は、明示的な送信で現在の全メンバーを把握できている場合に限ります。
 
-**画像メッセージ：** 本体とプレビューで暗号化ストリームが再利用されるため、暗号化した `--image` 送信は
-無効です。アップロード、グループ鍵登録、メッセージ作成の前に停止し、非E2EEへの自動切り替えでも回避できません。
-元の画像を一般ファイルとして送るには `--file` を使います。ファイルの対応状況に関する上記の確認は必要です。
-
-LINEが非E2EEの画像送信に対応すると明示した場合は、次を使います。HTTPS/TLSで転送しますが、LINEは画像を読めます。
+**画像メッセージ：** `--image` は既定で Letter Sealing を必須とします。
+画像を一度だけ暗号化し、同一の暗号文を本体とプレビューに使います。画像ごとに新しい鍵を生成します。
+`--image` を繰り返すと最大50枚を10枚ずつ順番に送信し、余りは新しいグループになります。
+失敗や受信確認の欠落で停止し、自動再送はしません。元のバイト列には `--file` を使ってください。
+実際のLINEアプリでの表示は未検証です。[英語版の詳細](CLI.md#send-messages-and-files)を参照してください。
 
 ```sh
-line send CHAT_ID --image ./screenshot.png --json
+line send CHAT_ID --image ./one.png --image ./two.jpg --json
 ```
 
 `--image` は実際のJPEGまたは静止PNGデータを受け付けます。上限は20 MiB、4,000万画素、各辺16384画素です。
@@ -852,7 +852,7 @@ Linuxでは、確認したセッションのパスを `$HOME/.config/line-cli` �
 | --- | --- |
 | ガイドのオプションが不明と表示される | `line version` と `line COMMAND --help` を実行し、該当タグのガイドと比較します。更新確認は `line update --check` です。 |
 | `encryption_required` | E2EE非対応のため厳格モードで停止しました。`--require-e2ee`を外すとHTTPS/TLSで送信しますが、LINEは内容を読めます。 |
-| `encrypted_image_unavailable` | 暗号化画像は無効です。元のバイト列には `--file` を使いますが、ファイルの対応状況の確認は必要です。 |
+| `encrypted_image_unavailable` | Legacy error from older client releases; see [current photo support](CLI.md#send-messages-and-files). |
 | SSHやサービスでストレージにアクセスできない | 同じユーザーと環境で `line auth status --check --json` を実行し、[サービスの診断](#diagnose-a-headless-service)を確認します。回避のためにセッションファイルを削除しないでください。 |
 | 送信失敗、または最近の履歴に見つからない | 再実行前にLINEを確認します。[構造化エラー](#structured-errors)で確認済みか不明かを判断します。最近の履歴にないことは未配信の証拠ではありません。 |
 | 履歴ページが短い、または一部を復号できない | `exhausted` が真になるまでカーソルで続行できます。各状態と終了コードを確認してください。古い履歴や鍵は取得できない場合があります。 |

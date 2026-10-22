@@ -339,18 +339,26 @@ separately from text. Missing or invalid capabilities, missing keys, incomplete
 membership, and transport errors never authorize a downgrade. A group key can be
 registered only during an explicit send with a complete list of current members.
 
-**Native images.** Encrypted `--image` sending is disabled because the current
-full-image/preview format reuses an encryption stream. It stops before uploads,
-group-key registration, or message creation; opting out of the E2EE requirement does not
-bypass that restriction. Use `--file` to send the original image as a generic file,
-subject to the file support checks above.
+**Native images.** `--image` sends a photo bubble with Letter Sealing required
+by default. The normalized JPEG is encrypted once with a fresh per-photo key;
+the exact same ciphertext is uploaded as the image and its preview. No distinct
+thumbnail is encrypted with that key. This avoids the former CTR-stream reuse.
+Use `--file` when the original bytes and metadata must be preserved.
 
-When LINE explicitly supports non-E2EE images, use the following. HTTPS/TLS
-protects the transfer, but LINE can read the image:
+Repeat `--image` to send up to 50 photos, sequentially in groups of 10. Overflow
+starts a new group; a final single photo is sent individually. Groups require
+Letter Sealing. A missing receipt/group ID or any failure stops the batch without
+retrying. Partial JSON output contains `receipts` and `complete:false`; inspect
+LINE before submitting anything again. All selected files are validated before
+session access. Each JSON receipt optionally includes the server `group_id`.
 
 ```sh
-line send CHAT_ID --image ./screenshot.png --require-e2ee=false --json
+line send CHAT_ID --image ./one.png --image ./two.jpg --json
 ```
+
+Explicit `--require-e2ee=false` remains available for a single image only when
+LINE reports non-E2EE support. HTTPS/TLS then protects transport, but LINE can
+read the image. The scheduler always requires Letter Sealing.
 
 `--image` accepts actual JPEG or still PNG data up to 20 MiB, 40 million decoded
 pixels, and 16384 pixels per side. Before session access it applies EXIF
@@ -831,7 +839,7 @@ when storage is unavailable, then return the matching nonzero code.
 | --- | --- |
 | A documented option is unknown | Run `line version` and `line COMMAND --help`; compare with the docs at that release tag. Check for updates with `line update --check`. |
 | `encryption_required` | LINE reports no E2EE support and the send was blocked. Use `--require-e2ee=false` to allow HTTPS/TLS for this send; LINE can read that content. |
-| `encrypted_image_unavailable` | Encrypted native images are disabled. Try `--file` for the original bytes; file support checks still apply. |
+| `encrypted_image_unavailable` | Legacy error from older clients that disabled native photos. |
 | Login or an SSH service cannot access storage | Run `line auth status --check --json` as the same user and environment. Follow [headless diagnostics](#diagnose-a-headless-service); do not delete session files to bypass the error. |
 | A send fails or is absent from recent history | Inspect LINE before repeating it. Use [structured errors](#structured-errors) to distinguish a confirmed action from an unknown outcome. Recent history is not proof of non-delivery. |
 | A history page is short or partly unreadable | Continue with its cursor unless `exhausted` is true. Check each message status and the exit code; older keys/history may be unavailable. |
@@ -889,8 +897,8 @@ and fake APIs; live LINE tests require explicit authorization.
 - QR login is experimental and requires usable Letter Sealing keys.
 - History pages contain at most 100 messages; use `--page --json` and its cursor for older available history. Action/reply lookup is bounded to 10 pages and 30 seconds.
 - Generic files require LINE to report media support; non-E2EE delivery uses HTTPS/TLS.
-  Encrypted native images are disabled; non-E2EE JPEG/PNG images require explicit
-  support from LINE. Native audio/video, animated images, image replies, and
+  Native JPEG/still-PNG photos support Letter Sealing with identical image/preview
+  ciphertext. Non-E2EE single photos require explicit opt-out and LINE support. Native audio/video, animated images, image replies, and
   sticker sends are unsupported.
 - Downloads support images, video, audio, and files up to 20 MiB; external
   media URLs are unsupported.

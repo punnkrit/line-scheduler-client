@@ -2,13 +2,10 @@
 
 ## Current CLI status
 
-Encrypted native-image sending is disabled before uploads, group-key registration,
-or message creation. Explicit non-E2EE capability permits automatic HTTPS/TLS
-delivery; `--require-e2ee` blocks it before remote actions.
-The encrypted stages below describe the investigated Chrome protocol, not an
-available CLI send path. Native-image live interoperability remains unverified.
-See the [security changes](../../SECURITY.md#security-change-record) and
-[user guide](../../CLI.md#send-messages-and-files).
+Encrypted native JPEG/still-PNG photos use the single-representation format
+below. Letter Sealing is required by default and always required for groups.
+Real-V2 and independent WebCrypto recipient tests pass. Server acceptance and
+actual LINE-app display of the larger preview remain unverified by a live send.
 
 ## Evidence
 
@@ -79,14 +76,32 @@ return `x-obs-oid`; absence is an unknown upload outcome and prevents later step
 The preview must succeed before sending. There is no upload retry/resume in the
 CLI, even though Chrome has UI retry facilities.
 
-`CL` uses the same 32-byte key material for full and preview encryption, each
-using FileEncryption HKDF, AES-CTR and HMAC-SHA256 as documented in
-[media download](media-download.md). The preview is a separately authenticated
-object. `jP` supplies `SID=emi`, `OID`, normalized full-image `FILE_SIZE`, and
-`MEDIA_THUMB_INFO` containing preview width/height. `gL` and `EL` place
-`keyMaterial` and normalized `fileName` only in the encrypted payload, removing
-`ENC_KM` and `FILE_NAME` from the outgoing outer metadata. `e2eeVersion=2` is
-retained. Plain image metadata is empty in the ordinary mode.
+Chrome `CL` uses the same 32-byte key material and restarts FileEncryption
+HKDF/AES-CTR for the full and smaller preview. That creates a two-time stream
+when the plaintexts differ. This fork deliberately uses **one representation**:
+
+1. Prepare the bounded normalized full JPEG using the existing limits.
+2. Generate fresh 32-byte random key material and encrypt it exactly once.
+3. Upload that exact ciphertext-plus-HMAC buffer as both the `emi` full object
+   and `OID__ud-preview`. Never independently encrypt another thumbnail.
+4. Advertise the actual normalized JPEG dimensions in `MEDIA_THUMB_INFO`, and
+   its byte length in `FILE_SIZE`. Keep key material and filename exclusively
+   in the authenticated Letter Sealing payload; outer `e2eeVersion` remains 2.
+
+The version-matched Chrome download path (the function containing the
+`E2EE_HMAC_NOT_MATCHED` check) applies the same HKDF, counter and HMAC verification
+to the preview and full resource. The resource URL builder chooses the `__ud-preview` suffix; neither
+path requires a different key or resized plaintext. An independent Node WebCrypto
+recipient authenticates and decrypts both generated objects byte-for-byte, and a
+real Letter Sealing V2 recipient independently opens the key payload. This is
+source-level and synthetic compatibility evidence; it does not prove OBS accepts
+the larger preview or that every LINE app renders it. No live traffic was captured.
+
+Identical ciphertexts reveal that the representations are equal, which is
+intentional. They do not expose an XOR of *different* images. Independent random
+key material is generated for every photo, including repeated copies of a photo.
+The cost is a larger preview download; JPEG quality/dimensions follow existing
+normalization. The distinct prepared thumbnail is never encrypted or uploaded.
 
 The CLI persists the message request sequence before `sendMessage`; OBS uses its
 own random request ID, and the preview reuses the returned object ID. Outcomes
@@ -116,3 +131,20 @@ share a keystream. No independent preview nonce/key or compatible secure
 representation was established. Receiving historical images is unchanged.
 Do not restore encrypted sends until both sender and recipient semantics of a
 secure representation are verified. Plaintext capability handling is separate.
+
+## Single-representation recovery and grouping (2026-10-21)
+
+The original distinct-thumbnail encrypted path above remains prohibited. The
+single-representation upload replaces it, retaining mandatory E2EE capability,
+peer/group key checks, persisted sequences, fenced saves and no mutation retry.
+
+Reinspection of public Chrome 3.7.2 `NP`, `RP`, `LP`, `jP` and `UP` establishes:
+consecutive image selections are split with `chunk(images,10)`; singleton tails
+are ungrouped. A group uses decimal-string `GSEQ` (1-based), `GTOTAL` (2..10),
+and initial `GID="0"`. The server receipt supplies the real opaque `GID` (not assumed numeric); later photos
+use that confirmed value. Each new group starts again with `GID="0"`. Uploads
+and sends run sequentially. The fork never invents an ID or continues after a
+missing/mismatched group ID, failed upload, missing receipt or uncertain send.
+`SendImagesContext` and repeated CLI `--image` return confirmed receipts on error.
+The scheduler durably saves progress before another photo and never replays a
+claimed batch. Tests cover counts 1,2,10,11,20,21,50 and interrupted groups.

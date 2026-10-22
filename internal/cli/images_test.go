@@ -52,6 +52,8 @@ func TestImageArgumentsBeforeSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, options := range [][]string{
+		{"--image", path, "--image", bad},
+		{"--image", path, "--image", path, "--require-e2ee=false"},
 		{"--image", ""}, {"--image", "missing"}, {"--image", bad}, {"--image", t.TempDir()},
 		{"--image", path, "--text", "caption"}, {"--image", path, "--stdin"}, {"--image", path, "--file", path},
 		{"--image", path, "--mentions", "[]"}, {"--image", path, "--reply-to", "123"},
